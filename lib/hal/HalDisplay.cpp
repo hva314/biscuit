@@ -11,6 +11,11 @@ HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_R
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin() {
+  if (gpio.deviceIsX3()) {
+    // X3 uses the 792x528 panel variant of the same SSD1677 controller.
+    // Must be selected before begin() so geometry and grayscale state are correct.
+    einkDisplay.setDisplayX3();
+  }
   einkDisplay.begin();
 }
 
@@ -62,10 +67,10 @@ void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.
 
 void HalDisplay::displayGrayBuffer(bool turnOffScreen) { einkDisplay.displayGrayBuffer(turnOffScreen); }
 
-uint16_t HalDisplay::getDisplayWidth() const { return EInkDisplay::DISPLAY_WIDTH; }
+uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 
-uint16_t HalDisplay::getDisplayHeight() const { return EInkDisplay::DISPLAY_HEIGHT; }
+uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHeight(); }
 
-uint16_t HalDisplay::getDisplayWidthBytes() const { return EInkDisplay::DISPLAY_WIDTH_BYTES; }
+uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
 
-uint32_t HalDisplay::getBufferSize() const { return EInkDisplay::BUFFER_SIZE; }
+uint32_t HalDisplay::getBufferSize() const { return einkDisplay.getBufferSize(); }

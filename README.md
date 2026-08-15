@@ -1,6 +1,6 @@
 # biscuit.
 
-Custom firmware for the **Xteink X4** e-paper device. Turns a $70 e-ink reader into a smart device with wireless tools, security features, communication, games, and utilities — while keeping full e-reader functionality.
+Custom firmware for the **Xteink X4** and **X3** e-paper devices. Turns a $70 e-ink reader into a smart device with wireless tools, security features, communication, games, and utilities — while keeping full e-reader functionality.
 
 Forked from [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader). All core reading functionality comes from CrossPoint. Biscuit builds on top of it.
 
@@ -25,6 +25,15 @@ The 4.26" e-ink display is readable in direct sunlight, retains its image withou
 | BLE | 5.0 (shared radio with WiFi) |
 | Storage | MicroSD (FAT32) |
 | Port | USB-C (serial + power) |
+
+### Device support
+
+The **X3** is a sibling device: same ESP32-C3 SoC and display controller, but a
+792×528 panel and a BQ27220 fuel-gauge battery. biscuit auto-detects it on boot.
+See [docs/x3-support.md](docs/x3-support.md) for technical details and
+[docs/x3-initial-flash-checklist.md](docs/x3-initial-flash-checklist.md) for how
+to flash it — the X3's USB is factory-locked on many units, so it flashes from
+the SD card.
 
 ## Apps
 
@@ -274,6 +283,15 @@ Three UI themes, selectable in Settings:
 
 To revert to stock firmware, use the same site or press "Swap boot partition" at https://xteink.dve.al/debug.
 
+### SD card (X3, first install)
+
+The X3's USB port is factory-locked on many units, so flash it from the SD card
+instead: put the firmware at the card root as `update.bin`, then hold the
+left-side button and the power button together until the bootloader flashes it.
+See [docs/x3-initial-flash-checklist.md](docs/x3-initial-flash-checklist.md) for
+full steps, including updates via `firmware.bin` and recovery via
+`force_update.bin`.
+
 ### Manual
 
 ```bash
@@ -289,7 +307,7 @@ pio run --target upload
 - PlatformIO Core or VS Code + PlatformIO IDE
 - Python 3.8+
 - USB-C data cable
-- Xteink X4
+- Xteink X4 or X3
 
 ### Building
 

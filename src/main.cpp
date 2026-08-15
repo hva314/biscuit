@@ -24,6 +24,7 @@
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/SdFirmwareUpdater.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -250,6 +251,31 @@ void setup() {
     setupDisplayAndFonts();
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
+  }
+
+  // X3 / SD-flash recovery: flash /force_update.bin before the UI starts so a
+  // "boots but broken" image can be recovered without a USB connection.
+  if (Storage.exists("/force_update.bin")) {
+    // Heap-allocate: the updater holds a 4KB transfer buffer, which is too large
+    // for the setup() task stack.
+    auto sdUpdater = std::make_unique<SdFirmwareUpdater>();
+    SdFirmwareUpdater::Error err = sdUpdater->begin("/force_update.bin");
+    if (err == SdFirmwareUpdater::Error::OK) {
+      while (sdUpdater->pump(&err) == SdFirmwareUpdater::PumpResult::InProgress) {
+        delay(1);  // yield so the scheduler/watchdog stays fed during the flash
+      }
+      if (err == SdFirmwareUpdater::Error::OK) {
+        err = sdUpdater->commit();
+      }
+    }
+    if (err == SdFirmwareUpdater::Error::OK) {
+      LOG_INF("MAIN", "force_update.bin flashed, rebooting");
+      ESP.restart();
+    } else {
+      // Drop the file so we don't retry (and boot-loop) on every boot.
+      LOG_ERR("MAIN", "force_update.bin flash failed (err=%d), removing", static_cast<int>(err));
+      Storage.remove("/force_update.bin");
+    }
   }
 
   HalSystem::checkPanic();

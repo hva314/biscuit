@@ -12,6 +12,7 @@
 #include "DnsLookupActivity.h"
 #include "EtchASketchActivity.h"
 #include "HttpClientActivity.h"
+#include "HttpMonitorActivity.h"
 #include "GameOfLifeActivity.h"
 #include "HostScannerActivity.h"
 #include "MappedInputManager.h"
@@ -104,7 +105,7 @@ static constexpr RadarNode kRadarNodes[8] = {
   {"OFFENSE",  21},
   {"DEFENSE",  12},
   {"COMMS",     5},
-  {"TOOLS",    32},
+  {"TOOLS",    33},
   {"GAMES",    11},
   {"READER",    5},
   {"SETTINGS",  7},
@@ -214,6 +215,7 @@ void AppsMenuActivity::loop() {
                 {tr(STR_PING_TOOL), "Ping a host or IP address", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<PingActivity>(r, m); }},
                 {tr(STR_DNS_LOOKUP), "Resolve domain names", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<DnsLookupActivity>(r, m); }},
                 {"HTTP Client", "Send GET/POST requests", UIIcon::Transfer, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<HttpClientActivity>(r, m); }},
+                {"HTTP Monitor", "Live server dashboard over HTTP", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<HttpMonitorActivity>(r, m); }, false, []() -> bool { return Storage.exists("/biscuit/monitor.conf"); }},
                 {"mDNS Browser", "Discover local services", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<MdnsBrowserActivity>(r, m); }},
                 AppCategoryActivity::SectionHeader("PRODUCTIVITY"),
                 {"Clock", "NTP clock / stopwatch / pomodoro", UIIcon::Recent, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<ClockActivity>(r, m); }},
@@ -428,6 +430,7 @@ void AppsMenuActivity::loop() {
               {tr(STR_PING_TOOL), "Ping a host or IP address", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<PingActivity>(r, m); }},
               {tr(STR_DNS_LOOKUP), "Resolve domain names", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<DnsLookupActivity>(r, m); }},
               {"HTTP Client", "Send GET/POST requests", UIIcon::Transfer, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<HttpClientActivity>(r, m); }},
+              {"HTTP Monitor", "Live server dashboard over HTTP", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<HttpMonitorActivity>(r, m); }, false, []() -> bool { return Storage.exists("/biscuit/monitor.conf"); }},
               {"mDNS Browser", "Discover local services", UIIcon::Wifi, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<MdnsBrowserActivity>(r, m); }},
               AppCategoryActivity::SectionHeader("PRODUCTIVITY"),
               {"Clock", "NTP clock / stopwatch / pomodoro", UIIcon::Recent, [](GfxRenderer& r, MappedInputManager& m) { return std::make_unique<ClockActivity>(r, m); }},
@@ -667,7 +670,7 @@ void AppsMenuActivity::drawTile(int index, int x, int y, int w, int h, bool sele
     case 1: name = "OFFENSE";  subtitle = "Scan/profile/test";  appCount = 21; break;
     case 2: name = "DEFENSE";  subtitle = "Ghost & protect";    appCount = 12; break;
     case 3: name = "COMMS";    subtitle = "Chat & share";       appCount = 5;  break;
-    case 4: name = "TOOLS";    subtitle = "Utilities";          appCount = 32; break;
+    case 4: name = "TOOLS";    subtitle = "Utilities";          appCount = 33; break;
     case 5: name = "GAMES";    subtitle = "Entertainment";      appCount = 11; break;
     case 6: name = "READER";   subtitle = "Books & OPDS";       appCount = 5;  break;
     case 7: name = "SETTINGS"; subtitle = "System & config";    appCount = 7;  break;

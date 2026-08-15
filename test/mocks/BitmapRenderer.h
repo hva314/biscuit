@@ -27,12 +27,17 @@ struct Rect {
 
 class GfxRenderer {
  public:
-  static constexpr int SW = 480;
-  static constexpr int SH = 800;
+  // Default geometry (X4 panel, portrait UI space). Existing previews rely on
+  // these defaults; pass width/height to the constructor to preview other
+  // panels (e.g. the X3: 528x792) without touching any existing call site.
+  static constexpr int DEFAULT_SW = 480;
+  static constexpr int DEFAULT_SH = 800;
   enum Orientation { Portrait, LandscapeClockwise, PortraitInverted, LandscapeCounterClockwise };
 
  private:
-  uint8_t fb[SW * SH];  // 0=white, 1=black
+  int SW;
+  int SH;
+  std::vector<uint8_t> fb;  // 0=white, 1=black, size SW*SH
   // Simple 8x16 bitmap font (ASCII 32-126)
   // Each char: 8 wide x 16 tall, stored as 16 bytes (1 bit per pixel, MSB left)
   static constexpr int CHAR_W = 8;
@@ -171,12 +176,15 @@ class GfxRenderer {
   }
 
  public:
-  GfxRenderer() { clearScreen(); }
+  explicit GfxRenderer(int width = DEFAULT_SW, int height = DEFAULT_SH)
+      : SW(width), SH(height), fb(static_cast<size_t>(width) * height) {
+    clearScreen();
+  }
 
   int getScreenWidth() const { return SW; }
   int getScreenHeight() const { return SH; }
 
-  void clearScreen(uint8_t = 0) { memset(fb, 0, sizeof(fb)); }
+  void clearScreen(uint8_t = 0) { std::fill(fb.begin(), fb.end(), 0); }
 
   void displayBuffer(int = 0) {} // no-op in preview
 
@@ -241,16 +249,70 @@ class GfxRenderer {
 
   int getLineHeight(int font) { return getTextHeight(font) + 4; }
 
-  std::string truncatedText(int, const char* t, int, int = 0) { return t; }
-  std::vector<std::string> wrappedText(int, const char* t, int, int = 10) { return {t}; }
+  // Ellipsizes to fit maxWidth (character-by-character against this mock's own
+  // getTextWidth()) rather than being a no-op — previews rely on this to prove
+  // long strings actually get truncated instead of overlapping neighboring text.
+  std::string truncatedText(int font, const char* t, int maxWidth, int style = 0) {
+    const std::string full(t);
+    if (maxWidth <= 0 || getTextWidth(font, t, style) <= maxWidth) return full;
+
+    static constexpr const char* ELLIPSIS = "...";
+    if (getTextWidth(font, ELLIPSIS, style) > maxWidth) return "";
+
+    std::string best;
+    for (size_t i = 1; i <= full.size(); i++) {
+      const std::string candidate = full.substr(0, i) + ELLIPSIS;
+      if (getTextWidth(font, candidate.c_str(), style) > maxWidth) break;
+      best = full.substr(0, i);
+    }
+    return best + ELLIPSIS;
+  }
+  // Honours maxWidth/maxLines like the real GfxRenderer::wrappedText() —
+  // in particular, returns an EMPTY vector when maxLines <= 0, so a preview
+  // calling this with a bad maxLines argument shows the same "nothing rendered"
+  // failure a real device would, instead of silently returning the whole string
+  // as a single (possibly overflowing) line.
+  std::vector<std::string> wrappedText(int font, const char* text, int maxWidth, int maxLines = 10, int style = 0) {
+    std::vector<std::string> lines;
+    if (!text || maxWidth <= 0 || maxLines <= 0) return lines;
+
+    std::string remaining(text);
+    std::string currentLine;
+
+    while (!remaining.empty()) {
+      if (static_cast<int>(lines.size()) == maxLines - 1) {
+        const std::string lastContent = currentLine.empty() ? remaining : currentLine + " " + remaining;
+        lines.push_back(truncatedText(font, lastContent.c_str(), maxWidth, style));
+        return lines;
+      }
+
+      const size_t spacePos = remaining.find(' ');
+      const std::string word = (spacePos == std::string::npos) ? remaining : remaining.substr(0, spacePos);
+      const std::string candidate = currentLine.empty() ? word : (currentLine + " " + word);
+
+      if (getTextWidth(font, candidate.c_str(), style) <= maxWidth) {
+        currentLine = candidate;
+        remaining = (spacePos == std::string::npos) ? "" : remaining.substr(spacePos + 1);
+      } else if (currentLine.empty()) {
+        // Single word already too long for the line — place it as-is rather than looping forever.
+        lines.push_back(word);
+        remaining = (spacePos == std::string::npos) ? "" : remaining.substr(spacePos + 1);
+      } else {
+        lines.push_back(currentLine);
+        currentLine.clear();
+      }
+    }
+    if (!currentLine.empty()) lines.push_back(currentLine);
+    return lines;
+  }
 
   void invertScreen() {
-    for (int i = 0; i < SW * SH; i++) fb[i] = fb[i] ? 0 : 1;
+    for (size_t i = 0; i < fb.size(); i++) fb[i] = fb[i] ? 0 : 1;
   }
   void setOrientation(Orientation) {}
   Orientation getOrientation() const { return Portrait; }
-  uint8_t* getFrameBuffer() { return fb; }
-  static size_t getBufferSize() { return SW * SH; }
+  uint8_t* getFrameBuffer() { return fb.data(); }
+  size_t getBufferSize() const { return fb.size(); }
 
   // ============================================================
   // Save framebuffer as BMP (480x800 1-bit monochrome)

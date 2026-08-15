@@ -52,13 +52,15 @@ flashing guide for step-by-step instructions.
 
 ## Caveats
 
-- **Unverified until built.** The X3 code is written but has not been compiled or
-  run on hardware; the build happens on the owner's machine.
+- **Build + smoke test.** Compiled with PlatformIO (isolated venv, Python 3.12)
+  and flashed onto the X3 via the OEM `update.bin` bootloader; a walkaround
+  confirmed core functions (display, navigation, apps) work.
 - **Flash size.** The SD updater reuses the existing OTA slots (app0/app1,
-  0x640000 = 6.5 MB each) already used by the WiFi OTA. The app image must fit
-  that slot; if it doesn't, use the `slim` / `OMIT_FONTS` build.
+  0x640000 = 6,553,600 bytes each). Measured: `default` = 6,534,720 B (~18 KB
+  headroom), `slim` = 6,484,992 B (~67 KB headroom). Use `slim` for SD updates.
 - **App-level recovery only.** `force_update.bin` recovery requires biscuit to
   reach the point in `setup()` after SD init. A truly dead image must use the OEM
   bootloader `update.bin` path instead.
-- **Buttons / deep-sleep.** Assumed identical to X4 (shared ADC ladder, GPIO3
-  power). Still to be verified on hardware.
+- **Deep-sleep / battery / button ADC.** Spot-checked in a walkaround but not
+  exhaustively verified (fuel-gauge calibration, deep-sleep wake, per-button ADC
+  mapping). Assumed identical to X4 topology.

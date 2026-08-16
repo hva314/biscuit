@@ -79,6 +79,8 @@ bool parse(const char* text, Config& out, std::string& errorOut) {
       int v = atoi(value.c_str());
       if (v < 0) v = 0;
       out.fullRefreshEvery = v;
+    } else if (key == "font_size") {
+      out.fontSize = clampInt(atoi(value.c_str()), MIN_FONT_SIZE, MAX_FONT_SIZE);
     } else if (key == "title") {
       if (!value.empty()) out.title = clampLen(value, MAX_TITLE_LEN);
     } else if (key == "auth_header") {

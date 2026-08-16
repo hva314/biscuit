@@ -41,6 +41,7 @@ Put this file at the **top level of the `/biscuit` folder** on the SD card
 | `full_refresh_every` | 20 | 0 disables, otherwise a positive count | Every this-many polls, the device does a deeper "clean" e-ink refresh instead of a normal partial update. See "The refresh model" below. |
 | `title` | `HTTP Monitor` | any short string | Shown in the header. Overridable per-response by the server's own `title` field. |
 | `auth_header` | *(none — no header sent)* | a full HTTP header, e.g. `Authorization: Bearer abc123` | Sent verbatim as an HTTP header on every request. For access control, not for confidentiality — see the security note in the server API doc. |
+| `font_size` | 2 | 0–3 | Initial dashboard font size (0 smallest … 3 largest). Up/Down adjust it live; the last choice is remembered across reboots. |
 
 If the file is missing entirely, or `url` is missing or blank, the tool shows
 an on-screen error naming the exact problem so you can fix it without a
@@ -55,6 +56,7 @@ interval_sec       = 30      # 5..3600
 timeout_ms         = 5000    # 1000..30000
 full_refresh_every = 20      # 0 disables
 title              = prod-1
+font_size          = 2       # 0..3, 2 = default
 # auth_header      = Authorization: Bearer abc123
 ```
 
@@ -67,7 +69,8 @@ Copy this, edit `url` to point at your own server, and drop it at
 |---|---|
 | Back | Exit the tool |
 | Confirm | Force an immediate refresh (doesn't wait for the next scheduled poll) |
-| Up / Down | Scroll, when the dashboard has more rows than fit on screen |
+| Left / Right | Scroll, when the dashboard has more rows than fit on screen |
+| Up / Down | Make the dashboard font bigger / smaller. There are 4 sizes (0–3, see `font_size` above); the largest size is capped at 14pt on the size-constrained shipping build, since only fonts up to 14pt are bundled. The choice persists across reboots in `/biscuit/monitor_state.dat` on the SD card. |
 
 ## Power: this tool keeps the device awake
 
@@ -115,7 +118,7 @@ displays).
 | Screen ghosting builds up over time | `full_refresh_every` set too high or to `0` | Lower `full_refresh_every` (default 20) so clean refreshes happen more often |
 | Device drains battery fast with this tool open | Expected — the tool disables idle sleep while open | Run on USB power for long-term use |
 | Some rows are missing or truncated | Server response exceeds the device's hard limits (sections, rows, label/value length) | Trim your server output to the limits in [http-monitor-server-api.md](http-monitor-server-api.md) |
-| Can't see all the data at once | Dashboard has more rows than fit on one screen | Use Up/Down to scroll, or trim the server's row count to the screen-fit guidance in the server API doc |
+| Can't see all the data at once | Dashboard has more rows than fit on one screen | Use Left/Right to scroll, press Up/Down for a smaller font, or trim the server's row count to the screen-fit guidance in the server API doc |
 
 ## Installing it on an X3
 

@@ -18,6 +18,13 @@ constexpr int DEFAULT_TIMEOUT_MS = 5000;
 
 constexpr int DEFAULT_FULL_REFRESH_EVERY = 20;
 
+// Index into the dashboard font ladder (see HttpMonitorActivity::dashboardFontId).
+// 0 = smallest, 3 = largest; 2 (UI_12) matches the size the dashboard has always
+// used, so it's the default that keeps today's look unchanged.
+constexpr int MIN_FONT_SIZE = 0;
+constexpr int MAX_FONT_SIZE = 3;
+constexpr int DEFAULT_FONT_SIZE = 2;
+
 struct Config {
   std::string url;
   int intervalSec = DEFAULT_INTERVAL_SEC;
@@ -25,6 +32,7 @@ struct Config {
   int fullRefreshEvery = DEFAULT_FULL_REFRESH_EVERY;  // 0 disables periodic full refresh
   std::string title = "HTTP Monitor";
   std::string authHeader;  // optional, sent verbatim as an HTTP header, e.g. "Authorization: Bearer abc123"
+  int fontSize = DEFAULT_FONT_SIZE;  // initial dashboard font size; overridden at runtime by the sidecar file
 };
 
 // Pure parser: parses the full contents of a monitor.conf file (`text`) into `out`.

@@ -12,6 +12,9 @@ class CrossPointState {
   uint8_t lastSleepImage = UINT8_MAX;  // UINT8_MAX = unset sentinel
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
+  // Crash-loop guard for the boot app (see CrossPointSettings::bootTarget): incremented each time
+  // the boot app is launched, reset to 0 once AppsMenuActivity is reached.
+  uint8_t bootAppLoadCount = 0;
   ~CrossPointState() = default;
 
   // Get singleton instance

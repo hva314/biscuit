@@ -14,6 +14,7 @@
 #include <builtinFonts/all.h>
 
 #include <cstring>
+#include <memory>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -22,6 +23,7 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/BootTargetRegistry.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/SdFirmwareUpdater.h"
@@ -316,11 +318,26 @@ void setup() {
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
 
+  const bool backHeld = mappedInputManager.isPressed(MappedInputManager::Button::Back);
+
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
-    activityManager.goHome();
+  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || backHeld ||
+      APP_STATE.readerActivityLoadCount > 0) {
+    // Crash-loop guard: if the boot app didn't survive long enough last boot to clear the
+    // guard in loop() (counter still >=2), fall back to the menu instead of relaunching it.
+    const bool bootAppSafe = APP_STATE.bootAppLoadCount < 2;
+    std::unique_ptr<Activity> bootApp;
+    if (!backHeld && bootAppSafe && SETTINGS.bootTarget != 0) {
+      bootApp = BootTargets::make(SETTINGS.bootTarget, renderer, mappedInputManager);
+    }
+    if (bootApp) {
+      APP_STATE.bootAppLoadCount++;
+      APP_STATE.saveToFile();
+      activityManager.replaceActivity(std::move(bootApp));
+    } else {
+      activityManager.goHome();
+    }
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
@@ -340,6 +357,20 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.update();
+
+  // Boot-app crash-loop guard reset: once the device has run its main loop for a
+  // few seconds, the auto-start app has cleared onEnter/early-loop without crash-
+  // looping, so clear the guard. Using elapsed uptime (not "apps menu reached")
+  // is essential — a boot app's purpose is to skip the menu, and the counter must
+  // still reset for a healthy app the user stays in across reboots.
+  static bool bootAppGuardCleared = false;
+  if (!bootAppGuardCleared && millis() > 5000) {
+    bootAppGuardCleared = true;
+    if (APP_STATE.bootAppLoadCount != 0) {
+      APP_STATE.bootAppLoadCount = 0;
+      APP_STATE.saveToFile();
+    }
+  }
 
   renderer.setFadingFix(SETTINGS.fadingFix);
   renderer.setInverted(SETTINGS.displayInvert != 0);

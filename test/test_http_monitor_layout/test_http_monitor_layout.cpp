@@ -77,6 +77,21 @@ void test_scroll_metrics_positive_maxScroll_when_content_overflows() {
   TEST_ASSERT_EQUAL(15, m.maxScroll);
 }
 
+// A larger font (larger lineH) fits fewer lines on screen, so it must yield
+// fewer visibleLines and a larger maxScroll than a smaller font over the same
+// content band and total line count — this is the arithmetic that backs
+// HttpMonitorActivity's Up/Down font-size feature.
+void test_scroll_metrics_larger_lineH_yields_fewer_visible_lines_and_more_scroll() {
+  const auto small = computeScrollMetrics(/*totalLines=*/20, /*contentTop=*/300, /*contentBottom=*/600, /*lineH=*/20);
+  const auto large = computeScrollMetrics(/*totalLines=*/20, /*contentTop=*/300, /*contentBottom=*/600, /*lineH=*/40);
+  TEST_ASSERT_EQUAL(15, small.visibleLines);
+  TEST_ASSERT_EQUAL(5, small.maxScroll);
+  TEST_ASSERT_EQUAL(7, large.visibleLines);
+  TEST_ASSERT_EQUAL(13, large.maxScroll);
+  TEST_ASSERT_TRUE(large.visibleLines < small.visibleLines);
+  TEST_ASSERT_TRUE(large.maxScroll > small.maxScroll);
+}
+
 // ---- clampScrollOffset ----
 
 void test_clamp_scroll_offset_clamps_high() {
@@ -126,6 +141,7 @@ int main() {
   RUN_TEST(test_total_lines_no_alerts_heading_when_alert_count_zero);
   RUN_TEST(test_scroll_metrics_no_scroll_when_content_fits);
   RUN_TEST(test_scroll_metrics_positive_maxScroll_when_content_overflows);
+  RUN_TEST(test_scroll_metrics_larger_lineH_yields_fewer_visible_lines_and_more_scroll);
   RUN_TEST(test_clamp_scroll_offset_clamps_high);
   RUN_TEST(test_clamp_scroll_offset_clamps_low);
   RUN_TEST(test_clamp_scroll_offset_passes_through_in_range);

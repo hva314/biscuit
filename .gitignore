@@ -16,3 +16,6 @@ bin/*.bin
 .history/
 /.venv
 *.local*
+
+# Local build artifacts (see .CLAUDE.md BUILD RULE)
+builds/

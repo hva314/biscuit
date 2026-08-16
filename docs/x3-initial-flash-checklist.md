@@ -48,9 +48,15 @@ This is the step that gets biscuit onto the X3 for the very first time.
    itself and flashes it — you don't need to press anything else.
 6. Wait for it to finish and reboot. biscuit is now installed.
 
-> **If it just boots normally instead of flashing:** the file is probably not at
-> the top level of the card, or the name isn't exactly `update.bin`. Check both
-> and try again.
+> **If it just boots normally instead of flashing:** first check the file is at
+> the top level of the card and named exactly `update.bin`.
+>
+> **But if biscuit is already installed, that is the expected behaviour and no
+> amount of retrying will change it.** The bootloader you are trying to reach is
+> part of the device's *original* software, and installing biscuit replaced it.
+> You will see biscuit's own "booting" screen for as long as you hold the
+> buttons, then a normal boot. From this point on, use **Updating biscuit**
+> below — it is the only way in.
 >
 > **Heads-up:** this installs biscuit, but it does **not** unlock the USB port.
 > That's fine — from now on you update using the SD card (below), never USB.
@@ -65,6 +71,17 @@ Once biscuit is on the X3, update it like this:
 2. Put the card in the X3 and turn it on.
 3. Open **Settings → Update from SD card**.
 4. Confirm. A progress bar runs, then the device reboots into the new version.
+
+> **"Update failed" — read the second line.** The screen names the reason
+> underneath. The most likely one on an X3 is **"Image larger than the OTA
+> slot"**: the space available for firmware on your device is set by Xteink's
+> original partition layout, which biscuit cannot change without USB. A build
+> that is too big simply cannot be installed, and no amount of retrying helps —
+> you need a smaller build. See
+> [x3-support.md](x3-support.md#caveats) for measured sizes.
+>
+> Keep a copy of the firmware you are currently running. If an update misbehaves,
+> flashing that file back the same way returns you to a known-good state.
 
 ---
 

@@ -40,24 +40,53 @@ flashing model. For the user-facing "how do I flash it" steps, see
 
 ## Flashing model
 
-| Path | File | Trigger | Who handles it |
-|---|---|---|---|
-| First install (stock → biscuit) | `update.bin` | hold left button + power | OEM bootloader |
-| Update (biscuit → biscuit) | `firmware.bin` | Settings menu | biscuit (`SdFirmwareUpdater`) |
-| Recovery (broken biscuit) | `force_update.bin` | power on | biscuit (boot-time check) |
+| Path | File | Trigger | Who handles it | Available |
+|---|---|---|---|---|
+| First install (stock → biscuit) | `update.bin` | hold left button + power | OEM bootloader | **Once only** — see below |
+| Update (biscuit → biscuit) | `firmware.bin` | Settings menu | biscuit (`SdFirmwareUpdater`) | Always, size permitting |
+| Recovery (broken biscuit) | `force_update.bin` | power on | biscuit (boot-time check) | Only if `setup()` reaches SD init |
 
-The OEM bootloader handles the **first** flash and expects the app image named
-`update.bin`; biscuit's own updater handles every flash after that. See the
-flashing guide for step-by-step instructions.
+> **The OEM bootloader is a one-way door.** It lives in Xteink's *stock
+> firmware*, not in a persistent bootloader. Installing biscuit overwrites it,
+> and the left-button + power gesture stops doing anything from then on — the
+> device just boots biscuit normally. Once biscuit is installed, **Settings →
+> Update from SD card is the only way to change the firmware** on a unit with no
+> USB data lines. Plan accordingly: an image too large for the OTA slot cannot be
+> installed at all.
+
+`force_update.bin` is not an escape hatch from that. It calls the same
+`SdFirmwareUpdater` (`src/main.cpp`), so it fails identically on an oversized
+image — and it **deletes the file** on failure to avoid a boot loop, so it is a
+silent one-shot.
 
 ## Caveats
 
 - **Build + smoke test.** Compiled with PlatformIO (isolated venv, Python 3.12)
   and flashed onto the X3 via the OEM `update.bin` bootloader; a walkaround
-  confirmed core functions (display, navigation, apps) work.
-- **Flash size.** The SD updater reuses the existing OTA slots (app0/app1,
-  0x640000 = 6,553,600 bytes each). Measured: `default` = 6,534,720 B (~18 KB
-  headroom), `slim` = 6,484,992 B (~67 KB headroom). Use `slim` for SD updates.
+  confirmed core functions (display, navigation, apps) work. Settings →
+  **Update from SD card** has since been exercised on hardware too — it works,
+  subject to the size limit below.
+- **Flash size — the OTA slot is smaller than this repo's partition table says.**
+  `partitions.csv` declares app0/app1 at 0x640000 (6,553,600 B), but **that table
+  is never written to an X3**. It reaches the flash only via USB `esptool`, and
+  many X3 units expose no USB data lines at all (some ship with a 2-pin charge
+  connector). The device therefore keeps Xteink's **stock** partition table
+  forever, and `esp_ota_get_next_update_partition()` returns a slot whose size we
+  do not control and cannot read without USB.
+
+  Measured on a real X3 via Settings → Update from SD card:
+
+  | Image | Size | Result |
+  |---|---|---|
+  | `slim` + HTTP Monitor | 6,501,280 B | **rejected** |
+  | `slim` + HTTP Monitor, `-DOMIT_FONTS` | 3,729,888 B | **accepted** |
+
+  So the real ceiling on that unit is somewhere in **[3,729,888, 6,501,280)** —
+  it has not been narrowed further. Do not assume 6.25 MB is available. Note the
+  6,484,992 B `slim` image that unit ran previously arrived through the OEM
+  bootloader, a different mechanism, and says nothing about the OTA slot size.
+
+  Budget conservatively, keep `slim`, and if an update fails, suspect size first.
 - **App-level recovery only.** `force_update.bin` recovery requires biscuit to
   reach the point in `setup()` after SD init. A truly dead image must use the OEM
   bootloader `update.bin` path instead.

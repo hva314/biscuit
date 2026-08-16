@@ -10,7 +10,25 @@
 
 namespace {
 constexpr char kFirmwarePath[] = "/firmware.bin";
+
+// The X3 has no USB data connection, so a failed update leaves the user with no
+// serial log and no way to tell eight very different causes apart. Name the
+// reason on screen -- it is the only diagnostic channel this device has.
+const char* describeError(const SdFirmwareUpdater::Error err) {
+  switch (err) {
+    case SdFirmwareUpdater::Error::OK:            return "";
+    case SdFirmwareUpdater::Error::NoFile:        return "firmware.bin not found on SD";
+    case SdFirmwareUpdater::Error::FileOpenError: return "Could not open firmware.bin";
+    case SdFirmwareUpdater::Error::TooSmall:      return "File too small to be firmware";
+    case SdFirmwareUpdater::Error::TooLarge:      return "Image larger than the OTA slot";
+    case SdFirmwareUpdater::Error::BadMagic:      return "Not an ESP32 firmware image";
+    case SdFirmwareUpdater::Error::NoPartition:   return "No OTA partition on this device";
+    case SdFirmwareUpdater::Error::FileReadError: return "SD read failed during flash";
+    case SdFirmwareUpdater::Error::FlashError:    return "Flash write failed";
+  }
+  return "Unknown error";
 }
+}  // namespace
 
 void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
@@ -133,6 +151,10 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
 
     case State::Failed: {
       renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
+
+      const int reasonY = top + renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+      renderer.drawCenteredText(SMALL_FONT_ID, reasonY, describeError(lastError));
+
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;

@@ -116,3 +116,25 @@ displays).
 | Device drains battery fast with this tool open | Expected — the tool disables idle sleep while open | Run on USB power for long-term use |
 | Some rows are missing or truncated | Server response exceeds the device's hard limits (sections, rows, label/value length) | Trim your server output to the limits in [http-monitor-server-api.md](http-monitor-server-api.md) |
 | Can't see all the data at once | Dashboard has more rows than fit on one screen | Use Up/Down to scroll, or trim the server's row count to the screen-fit guidance in the server API doc |
+
+## Installing it on an X3
+
+The tool is part of the firmware, so getting it onto the device means flashing a
+build that contains it. On the X3 that is **Settings → Update from SD card** —
+and there is a size constraint worth knowing about before you build.
+
+The space available for firmware on an X3 is fixed by Xteink's original
+partition layout, which biscuit cannot change without USB access that most X3
+units do not have. A build too large for that slot is rejected outright with
+*"Image larger than the OTA slot"*, and there is no workaround short of a
+smaller build.
+
+Verified on hardware: a `slim` build carrying this tool at **6,501,280 B was
+rejected**, while the same build with `-DOMIT_FONTS` at **3,729,888 B was
+accepted**. If your update is refused, the image is the first thing to suspect.
+See [x3-support.md](x3-support.md#caveats) for the details and how to shrink a
+build.
+
+> **Status:** this tool has been confirmed working on a physical Xteink X3 —
+> polling a real endpoint and rendering the dashboard. Earlier revisions of this
+> document described only what the rendering tests showed.

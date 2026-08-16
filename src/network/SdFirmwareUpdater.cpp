@@ -36,10 +36,16 @@ SdFirmwareUpdater::Error SdFirmwareUpdater::begin(const char* path) {
 
   partition_ = esp_ota_get_next_update_partition(nullptr);
   if (partition_ == nullptr) {
+    // No second OTA slot in the partition table actually on this device. Note
+    // that on the X3 the table is the stock one -- biscuit's partitions.csv is
+    // only written over USB, which many X3 units do not expose.
+    LOG_ERR("FW", "no OTA partition available for update");
     abort();
     return Error::NoPartition;
   }
   if (totalSize_ > partition_->size) {
+    LOG_ERR("FW", "image %u B exceeds OTA partition %u B", static_cast<unsigned>(totalSize_),
+            static_cast<unsigned>(partition_->size));
     abort();
     return Error::TooLarge;
   }

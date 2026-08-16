@@ -72,7 +72,15 @@ class HttpMonitorActivity final : public Activity {
   unsigned long pollIntervalMs = 30000;
   int scrollOffset = 0;
   int framesUntilClean = 1;
+  bool hasDashboard = false;
+  bool cleanRefreshDue = false;
+  int fontSizeIndex = HttpMonitorConfig::DEFAULT_FONT_SIZE;  // index into the dashboard font ladder
   ButtonNavigator buttonNavigator;
+
+  // Runtime sidecar (not the user-edited monitor.conf) that persists the last
+  // font size chosen live with Up/Down, so it survives a reboot without
+  // rewriting (and clobbering comments in) monitor.conf.
+  static constexpr const char* FONT_STATE_PATH = "/biscuit/monitor_state.dat";
 
   void loadConfig();
   void fetch();
@@ -81,4 +89,11 @@ class HttpMonitorActivity final : public Activity {
   void renderFetching();
   void renderError();
   void renderDashboard();
+
+  // Maps fontSizeIndex to a registered font id, validated against
+  // renderer.getFontMap() (a shipping -DOMIT_FONTS build only registers a
+  // handful of fonts) — falls back to UI_12_FONT_ID if the candidate is absent.
+  int dashboardFontId() const;
+  void adjustFontSize(int delta);
+  void saveFontSize();
 };

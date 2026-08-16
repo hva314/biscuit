@@ -2,15 +2,16 @@
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <HalStorage.h>
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "HttpMonitorLayout.h"
 #include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/RadioManager.h"
@@ -50,6 +51,21 @@ void HttpMonitorActivity::loadConfig() {
     state = IDLE;
     pollIntervalMs = static_cast<unsigned long>(config.intervalSec) * 1000UL;
     framesUntilClean = (config.fullRefreshEvery > 0) ? config.fullRefreshEvery : 1;
+
+    // font_size in monitor.conf is the initial value; the sidecar (written by
+    // Up/Down at runtime) overrides it so the last live choice survives a reboot
+    // without rewriting (and clobbering comments in) monitor.conf.
+    fontSizeIndex = config.fontSize;
+    if (Storage.exists(FONT_STATE_PATH)) {
+      const String s = Storage.readFile(FONT_STATE_PATH);
+      // Require a real digit — atoi("") and atoi("garbage") both return 0, which
+      // would otherwise silently pin the font to the smallest size and discard
+      // the monitor.conf font_size default on a corrupt/empty sidecar.
+      if (s.length() > 0 && s[0] >= ('0' + HttpMonitorConfig::MIN_FONT_SIZE) &&
+          s[0] <= ('0' + HttpMonitorConfig::MAX_FONT_SIZE)) {
+        fontSizeIndex = s[0] - '0';
+      }
+    }
   } else {
     state = NO_CONFIG;
   }
@@ -73,7 +89,7 @@ void HttpMonitorActivity::loop() {
   if (state == IDLE) {
     lastPollMs = millis();
     state = FETCHING;
-    requestUpdate(true);
+    if (!hasDashboard) requestUpdate(true);
     fetch();
     return;
   }
@@ -83,21 +99,32 @@ void HttpMonitorActivity::loop() {
       mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     lastPollMs = millis();
     state = FETCHING;
-    requestUpdate(true);
+    if (!hasDashboard) requestUpdate(true);
     fetch();
     return;
   }
 
-  // Scroll (only meaningful once a dashboard is showing)
+  // Scroll (Left/Right, only meaningful once a dashboard is showing) and font
+  // size (Up/Down). These must stay on disjoint button sets — Up/Down are
+  // ButtonNavigator's default next/previous buttons too, so onNext()/onPrevious()
+  // would double-bind them to both scrolling and font size.
   if (state == SHOWING) {
-    buttonNavigator.onNext([this] {
-      scrollOffset++;
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] {
+      if (scrollOffset > 0) {
+        RenderLock lock(*this);
+        scrollOffset--;
+      }
       requestUpdate();
     });
-    buttonNavigator.onPrevious([this] {
-      if (scrollOffset > 0) scrollOffset--;
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] {
+      {
+        RenderLock lock(*this);
+        scrollOffset++;
+      }
       requestUpdate();
     });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustFontSize(+1); });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustFontSize(-1); });
   }
 
   // Timed poll
@@ -106,7 +133,7 @@ void HttpMonitorActivity::loop() {
     if (now - lastPollMs >= pollIntervalMs) {
       lastPollMs = now;
       state = FETCHING;
-      requestUpdate(true);
+      if (!hasDashboard) requestUpdate(true);
       fetch();
     }
   }
@@ -247,13 +274,64 @@ void HttpMonitorActivity::fetch() {
       dashboard = next;
       state = SHOWING;
       scrollOffset = 0;
+      hasDashboard = true;
     } else {
       fetchError = errMsg;
       state = ERROR;
     }
+    // Advance the clean-refresh cadence on every completed poll, not just a
+    // successful one — a persistent ERROR screen (server down) polls just as
+    // often as SHOWING does, and without this the ghosting-clear cadence never
+    // fires until a fetch finally succeeds, letting ghosting accumulate behind
+    // the error text indefinitely.
+    if (config.fullRefreshEvery > 0) {
+      if (--framesUntilClean <= 0) {
+        cleanRefreshDue = true;
+        framesUntilClean = config.fullRefreshEvery;
+      }
+    }
   }
   requestUpdate();
 }
+
+// ----------------------------------------------------------------
+// Font size
+// ----------------------------------------------------------------
+
+// Ladder index -> candidate font id. Only fonts guaranteed present in the
+// shipping (`slim` + `-DOMIT_FONTS`) build are used — see main.cpp's
+// setupDisplayAndFonts(), which registers just BOOKERLY_14, UI_10, UI_12 and
+// SMALL under OMIT_FONTS. Index 2 (UI_12) is the default and matches the size
+// the dashboard has always rendered at.
+int HttpMonitorActivity::dashboardFontId() const {
+  static constexpr int kFontLadder[] = {SMALL_FONT_ID, UI_10_FONT_ID, UI_12_FONT_ID, BOOKERLY_14_FONT_ID};
+  static constexpr int kLadderSize = static_cast<int>(sizeof(kFontLadder) / sizeof(kFontLadder[0]));
+
+  const int idx =
+      (fontSizeIndex >= 0 && fontSizeIndex < kLadderSize) ? fontSizeIndex : HttpMonitorConfig::DEFAULT_FONT_SIZE;
+  const int candidate = kFontLadder[idx];
+  // A missing font renders blank (GfxRenderer returns width/lineheight 0 for an
+  // unregistered id), so fall back to UI_12 — always present — rather than
+  // trust the ladder blindly.
+  const auto& fontMap = renderer.getFontMap();
+  if (fontMap.find(candidate) != fontMap.end()) return candidate;
+  return UI_12_FONT_ID;
+}
+
+void HttpMonitorActivity::adjustFontSize(int delta) {
+  const int next = fontSizeIndex + delta;
+  if (next < HttpMonitorConfig::MIN_FONT_SIZE || next > HttpMonitorConfig::MAX_FONT_SIZE || next == fontSizeIndex) {
+    return;
+  }
+  {
+    RenderLock lock(*this);
+    fontSizeIndex = next;
+  }
+  saveFontSize();
+  requestUpdate();
+}
+
+void HttpMonitorActivity::saveFontSize() { Storage.writeFile(FONT_STATE_PATH, String(fontSizeIndex)); }
 
 // ----------------------------------------------------------------
 // Render
@@ -278,16 +356,9 @@ void HttpMonitorActivity::render(RenderLock&&) {
       break;
   }
 
-  if (config.fullRefreshEvery > 0) {
-    // ReaderUtils::displayWithRefreshCycle() re-seeds its counter from
-    // SETTINGS.getRefreshFrequency() (the GLOBAL setting) whenever it fires a
-    // full refresh (ReaderUtils.h:55) — it has no way to know about our
-    // per-config full_refresh_every. Detect that reset (it only happens when
-    // the counter was <= 1 going in) and re-seed with our own value right
-    // after, so the config setting governs every cycle, not just the first.
-    const bool willReset = framesUntilClean <= 1;
-    ReaderUtils::displayWithRefreshCycle(renderer, framesUntilClean);
-    if (willReset) framesUntilClean = config.fullRefreshEvery;
+  if (config.fullRefreshEvery > 0 && cleanRefreshDue) {
+    cleanRefreshDue = false;
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   } else {
     renderer.displayBuffer();
   }
@@ -377,10 +448,12 @@ void HttpMonitorActivity::renderDashboard() {
   const char* title = dashboard.title[0] != '\0' ? dashboard.title : config.title.c_str();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title);
 
-  // Rows use UI_12 — this is a wall/desk dashboard read from across a room, not a
-  // handheld screen. Section headings share the font but are drawn BOLD (rows stay
+  // Rows use dashboardFontId() — UI_12 by default, but Up/Down let the user scale
+  // this dashboard up or down (it's read from across a room, not a handheld
+  // screen). Section headings share the font but are drawn BOLD (rows stay
   // REGULAR) so they read as visually dominant despite the shared size.
-  const int lineH = renderer.getLineHeight(UI_12_FONT_ID) + 6;
+  const int rowFont = dashboardFontId();
+  const int lineH = renderer.getLineHeight(rowFont) + 6;
   const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int contentWidth = pageWidth - 2 * metrics.contentSidePadding;
   const int unreservedContentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
@@ -435,13 +508,12 @@ void HttpMonitorActivity::renderDashboard() {
       // formulas to drift out of sync.
       const auto cols = HttpMonitorLayout::computeRowColumns(contentWidth, bar >= 0);
 
-      labelStr = renderer.truncatedText(UI_12_FONT_ID, label, cols.labelColMax);
-      labelWidth = renderer.getTextWidth(UI_12_FONT_ID, labelStr.c_str());
+      labelStr = renderer.truncatedText(rowFont, label, cols.labelColMax);
+      labelWidth = renderer.getTextWidth(rowFont, labelStr.c_str());
 
-      valueWidth = renderer.getTextWidth(UI_12_FONT_ID, value);
-      valueStr =
-          (valueWidth > cols.valueColMax) ? renderer.truncatedText(UI_12_FONT_ID, value, cols.valueColMax) : value;
-      valueWidth = renderer.getTextWidth(UI_12_FONT_ID, valueStr.c_str());
+      valueWidth = renderer.getTextWidth(rowFont, value);
+      valueStr = (valueWidth > cols.valueColMax) ? renderer.truncatedText(rowFont, value, cols.valueColMax) : value;
+      valueWidth = renderer.getTextWidth(rowFont, valueStr.c_str());
 
       if (bar >= 0) {
         const auto barSpanResult = HttpMonitorLayout::computeBarSpan(metrics.contentSidePadding, pageWidth,
@@ -455,13 +527,12 @@ void HttpMonitorActivity::renderDashboard() {
     if (visible) {
       if (isHeading) {
         // Headings are drawn directly (not via GUI.drawSubHeader, which only ever
-        // draws REGULAR) so BOLD keeps them visually dominant over UI_12 rows.
-        renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, label, true, EpdFontFamily::BOLD);
+        // draws REGULAR) so BOLD keeps them visually dominant over the row font.
+        renderer.drawText(rowFont, metrics.contentSidePadding, y, label, true, EpdFontFamily::BOLD);
       } else {
-        renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, labelStr.c_str(), true,
+        renderer.drawText(rowFont, metrics.contentSidePadding, y, labelStr.c_str(), true,
                           alert ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-        renderer.drawText(UI_12_FONT_ID, pageWidth - metrics.contentSidePadding - valueWidth, y,
-                          valueStr.c_str());
+        renderer.drawText(rowFont, pageWidth - metrics.contentSidePadding - valueWidth, y, valueStr.c_str());
 
         if (bar >= 0 && barSpan > 0) {
           // Drawn directly rather than via GUI.drawProgressBar(), which paints an
@@ -469,7 +540,8 @@ void HttpMonitorActivity::renderDashboard() {
           // next row, on top of that row's own label/value — logs on every call,
           // and computes its fill width from an unclamped percent. `bar` is already
           // clamped to 0..100 by fetch(), so the fill math here is safe outright.
-          const int barH = lineH - 12;
+          int barH = lineH - 12;
+          if (barH < 2) barH = 2;  // keep the bar visible even at the smallest font size
           const int barY = y + (lineH - barH) / 2;
           renderer.drawRect(barX, barY, barSpan, barH);
           const int fillWidth = (barSpan > 4) ? (barSpan - 4) * bar / 100 : 0;
@@ -514,6 +586,9 @@ void HttpMonitorActivity::renderDashboard() {
     renderer.drawText(SMALL_FONT_ID, pageWidth - metrics.contentSidePadding - w, unreservedContentTop, scrollBuf);
   }
 
-  const auto labels = mappedInput.mapLabels("Back", "Refresh", "Up", "Down");
+  // mapLabels() only labels the four FRONT buttons (Back/Confirm/Left/Right) —
+  // the side Up/Down buttons (now font size) aren't covered here; that mapping
+  // is documented in docs/http-monitor.md instead.
+  const auto labels = mappedInput.mapLabels("Back", "Refresh", "<", ">");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

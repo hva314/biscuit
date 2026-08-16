@@ -247,6 +247,36 @@ void test_full_refresh_every_default() {
   TEST_ASSERT_EQUAL(20, cfg.fullRefreshEvery);
 }
 
+// ---- font_size ----
+
+void test_font_size_default_when_absent() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://k\n", cfg, err));
+  TEST_ASSERT_EQUAL(2, cfg.fontSize);
+}
+
+void test_font_size_clamped_low() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\nfont_size=-5\n", cfg, err);
+  TEST_ASSERT_EQUAL(0, cfg.fontSize);
+}
+
+void test_font_size_clamped_high() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\nfont_size=99\n", cfg, err);
+  TEST_ASSERT_EQUAL(3, cfg.fontSize);
+}
+
+void test_font_size_valid_value_parsed() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\nfont_size=1\n", cfg, err);
+  TEST_ASSERT_EQUAL(1, cfg.fontSize);
+}
+
 // ============================================================
 void setUp() {}
 void tearDown() {}
@@ -279,5 +309,9 @@ int main() {
   RUN_TEST(test_title_and_auth_header_parsed);
   RUN_TEST(test_full_refresh_every_zero_disables);
   RUN_TEST(test_full_refresh_every_default);
+  RUN_TEST(test_font_size_default_when_absent);
+  RUN_TEST(test_font_size_clamped_low);
+  RUN_TEST(test_font_size_clamped_high);
+  RUN_TEST(test_font_size_valid_value_parsed);
   return UNITY_END();
 }

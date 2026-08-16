@@ -6,6 +6,7 @@
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
+#include "activities/BootTargetRegistry.h"
 #include "activities/settings/SettingsActivity.h"
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -84,6 +85,8 @@ inline const std::vector<SettingInfo>& getSettingsList() {
                         "sleepTimeout", StrId::STR_CAT_SYSTEM),
       SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
                           StrId::STR_CAT_SYSTEM),
+      SettingInfo::Enum(StrId::STR_BOOT_APP, &CrossPointSettings::bootTarget, BootTargets::labels(), "bootApp",
+                        StrId::STR_CAT_SYSTEM),
 
       // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
       SettingInfo::DynamicString(

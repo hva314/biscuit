@@ -8,10 +8,11 @@
 // here (with -DNATIVE_TEST set by the native env) never pulls in HalStorage.h.
 
 #include <unity.h>
+
 #include <string>
 
-#include "../../src/activities/apps/HttpMonitorConfig.h"
 #include "../../src/activities/apps/HttpMonitorConfig.cpp"
+#include "../../src/activities/apps/HttpMonitorConfig.h"
 
 using HttpMonitorConfig::Config;
 
@@ -67,8 +68,7 @@ void test_inline_trailing_comment_ignored() {
 void test_hash_inside_value_without_preceding_space_preserved() {
   Config cfg;
   std::string err;
-  TEST_ASSERT_TRUE(HttpMonitorConfig::parse(
-      "url=http://x\nauth_header = Authorization: Bearer abc#123\n", cfg, err));
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://x\nauth_header = Authorization: Bearer abc#123\n", cfg, err));
   TEST_ASSERT_EQUAL_STRING("Authorization: Bearer abc#123", cfg.authHeader.c_str());
 }
 
@@ -104,8 +104,8 @@ void test_auth_header_with_embedded_cr_rejected() {
   Config cfg;
   std::string err;
   const std::string valueWithEmbeddedCr = "Bearer abc\rX-Evil: 1";
-  const bool ok = HttpMonitorConfig::parse(("url=http://a\nauth_header = " + valueWithEmbeddedCr + "\n").c_str(),
-                                            cfg, err);
+  const bool ok =
+      HttpMonitorConfig::parse(("url=http://a\nauth_header = " + valueWithEmbeddedCr + "\n").c_str(), cfg, err);
   TEST_ASSERT_TRUE(ok);  // url is still valid — only auth_header is rejected, not the whole file
   TEST_ASSERT_EQUAL_STRING("", cfg.authHeader.c_str());
 }
@@ -113,8 +113,7 @@ void test_auth_header_with_embedded_cr_rejected() {
 void test_auth_header_without_embedded_cr_still_accepted() {
   Config cfg;
   std::string err;
-  TEST_ASSERT_TRUE(
-      HttpMonitorConfig::parse("url=http://a\nauth_header = Authorization: Bearer abc123\n", cfg, err));
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://a\nauth_header = Authorization: Bearer abc123\n", cfg, err));
   TEST_ASSERT_EQUAL_STRING("Authorization: Bearer abc123", cfg.authHeader.c_str());
 }
 
@@ -225,8 +224,8 @@ void test_whitespace_trimmed_key_and_value() {
 void test_title_and_auth_header_parsed() {
   Config cfg;
   std::string err;
-  TEST_ASSERT_TRUE(HttpMonitorConfig::parse(
-      "url=http://i\ntitle = prod-1\nauth_header = Authorization: Bearer abc123\n", cfg, err));
+  TEST_ASSERT_TRUE(
+      HttpMonitorConfig::parse("url=http://i\ntitle = prod-1\nauth_header = Authorization: Bearer abc123\n", cfg, err));
   TEST_ASSERT_EQUAL_STRING("prod-1", cfg.title.c_str());
   TEST_ASSERT_EQUAL_STRING("Authorization: Bearer abc123", cfg.authHeader.c_str());
 }

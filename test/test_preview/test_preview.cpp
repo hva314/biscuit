@@ -71,30 +71,57 @@ static void drawListItem(int y, const char* text, bool selected) {
 static void drawPip(int cx, int cy, int r) {
   for (int dy = -r; dy <= r; dy++) {
     int dx = 0;
-    while ((dx+1)*(dx+1) + dy*dy <= r*r) dx++;
+    while ((dx + 1) * (dx + 1) + dy * dy <= r * r) dx++;
     renderer.fillRect(cx - dx, cy + dy, dx * 2 + 1, 1, true);
   }
 }
 
 static void drawDie(int x, int y, int size, int value) {
   renderer.fillRect(x + 4, y + 4, size, size, true);    // shadow
-  renderer.fillRect(x, y, size, size, false);             // white face
-  renderer.drawRect(x, y, size, size);                    // outer border
-  renderer.drawRect(x + 2, y + 2, size - 4, size - 4);   // inner border
+  renderer.fillRect(x, y, size, size, false);           // white face
+  renderer.drawRect(x, y, size, size);                  // outer border
+  renderer.drawRect(x + 2, y + 2, size - 4, size - 4);  // inner border
 
   int pip = size / 8;
   int m = size / 4;
   int l = x + m, r = x + size - m;
   int t = y + m, b = y + size - m;
-  int mx = x + size/2, my = y + size/2;
+  int mx = x + size / 2, my = y + size / 2;
 
   switch (value) {
-    case 1: drawPip(mx,my,pip); break;
-    case 2: drawPip(r,t,pip); drawPip(l,b,pip); break;
-    case 3: drawPip(r,t,pip); drawPip(mx,my,pip); drawPip(l,b,pip); break;
-    case 4: drawPip(l,t,pip); drawPip(r,t,pip); drawPip(l,b,pip); drawPip(r,b,pip); break;
-    case 5: drawPip(l,t,pip); drawPip(r,t,pip); drawPip(mx,my,pip); drawPip(l,b,pip); drawPip(r,b,pip); break;
-    case 6: drawPip(l,t,pip); drawPip(r,t,pip); drawPip(l,my,pip); drawPip(r,my,pip); drawPip(l,b,pip); drawPip(r,b,pip); break;
+    case 1:
+      drawPip(mx, my, pip);
+      break;
+    case 2:
+      drawPip(r, t, pip);
+      drawPip(l, b, pip);
+      break;
+    case 3:
+      drawPip(r, t, pip);
+      drawPip(mx, my, pip);
+      drawPip(l, b, pip);
+      break;
+    case 4:
+      drawPip(l, t, pip);
+      drawPip(r, t, pip);
+      drawPip(l, b, pip);
+      drawPip(r, b, pip);
+      break;
+    case 5:
+      drawPip(l, t, pip);
+      drawPip(r, t, pip);
+      drawPip(mx, my, pip);
+      drawPip(l, b, pip);
+      drawPip(r, b, pip);
+      break;
+    case 6:
+      drawPip(l, t, pip);
+      drawPip(r, t, pip);
+      drawPip(l, my, pip);
+      drawPip(r, my, pip);
+      drawPip(l, b, pip);
+      drawPip(r, b, pip);
+      break;
   }
 }
 
@@ -137,11 +164,11 @@ void render_dice_1d20() {
 
   // Single d20 — large, centered, number inside
   int x = 170, y = 220, size = 140;
-  renderer.fillRect(x+4, y+4, size, size, true);
+  renderer.fillRect(x + 4, y + 4, size, size, true);
   renderer.fillRect(x, y, size, size, false);
   renderer.drawRect(x, y, size, size);
-  renderer.drawRect(x+2, y+2, size-4, size-4);
-  renderer.drawCenteredText(UI_12_FONT_ID, y + size/2 - 12, "17", true, 1);
+  renderer.drawRect(x + 2, y + 2, size - 4, size - 4);
+  renderer.drawCenteredText(UI_12_FONT_ID, y + size / 2 - 12, "17", true, 1);
   renderer.drawCenteredText(SMALL_FONT_ID, y + size - 20, "d20");
 
   renderer.drawCenteredText(UI_10_FONT_ID, 440, "d20: 17", true, 1);
@@ -181,11 +208,15 @@ void render_evil_portal() {
   drawHeader("Evil Portal");
 
   int y = 100;
-  renderer.drawText(SMALL_FONT_ID, 15, y, "ACTIVE", true, 1); y += 45;
+  renderer.drawText(SMALL_FONT_ID, 15, y, "ACTIVE", true, 1);
+  y += 45;
   renderer.drawText(SMALL_FONT_ID, 15, y, "SSID:", true, 1);
-  renderer.drawText(UI_10_FONT_ID, 80, y, "Free WiFi"); y += 45;
-  renderer.drawText(UI_10_FONT_ID, 15, y, "Clients: 3"); y += 45;
-  renderer.drawText(UI_10_FONT_ID, 15, y, "Captured: 2", true, 1); y += 45;
+  renderer.drawText(UI_10_FONT_ID, 80, y, "Free WiFi");
+  y += 45;
+  renderer.drawText(UI_10_FONT_ID, 15, y, "Clients: 3");
+  y += 45;
+  renderer.drawText(UI_10_FONT_ID, 15, y, "Captured: 2", true, 1);
+  y += 45;
   renderer.drawText(UI_10_FONT_ID, 15, y, "Last: john@example.com");
   drawButtonHints("Stop", "", "", "");
 
@@ -205,10 +236,7 @@ void render_apps_menu() {
   TEST_ASSERT_TRUE(renderer.saveBMP("test/preview_apps_menu.bmp"));
 }
 
-
-
 void render_countdowntimer() {
-
   renderer.clearScreen();
   drawHeader("CountdownTimer");
 
@@ -236,7 +264,6 @@ void render_countdowntimer() {
 
   TEST_ASSERT_TRUE(renderer.saveBMP("test/preview_countdowntimer.bmp"));
 }
-
 
 void render_diceroller() {
   // Reference: src\activities\apps\DiceRollerActivity.cpp
@@ -300,24 +327,27 @@ static void drawButtonHintsOn(GfxRenderer& r, const char* b1, const char* b2, co
 struct HttpMonitorPreviewRow {
   const char* label = nullptr;
   const char* value = nullptr;
-  int bar = -1;               // legacy int bar: 0..100, -1 = none
-  bool alert = false;         // 6x6 marker + BOLD (kv rows and alert lines)
+  int bar = -1;        // legacy int bar: 0..100, -1 = none
+  bool alert = false;  // 6x6 marker + BOLD (kv rows and alert lines)
   // Extended fields mirroring the typed schema Row (HttpMonitorSchema.h). All
   // defaulted so the legacy {label, value, bar, alert} aggregate init used by the
   // older fixtures below keeps compiling unchanged.
-  const char* text = nullptr;   // `text` rows (wrap to <= 2 lines)
-  const char* glyphs = nullptr; // `glyphs` rows (concatenated glyph chars)
-  int type = 0;                 // HttpMonitorSchema::RowType (0 = KV)
-  int align = 0;                // HttpMonitorSchema::RowAlign (0 = LEFT)
+  const char* text = nullptr;    // `text` rows (wrap to <= 2 lines)
+  const char* glyphs = nullptr;  // `glyphs` rows (concatenated glyph chars)
+  int type = 0;                  // HttpMonitorSchema::RowType (0 = KV)
+  int align = 0;                 // HttpMonitorSchema::RowAlign (0 = LEFT)
   bool bold = false;
-  int sizeIdx = 0xFF;           // HttpMonitorSchema::SIZE_INHERIT (ladder 0..3)
-  int spacerHeight = 10;        // `spacer` px
-  int dividerInset = 0;         // `divider` px in from each side
-  int dividerLineWidth = 1;     // `divider` rule thickness (1..2)
+  int sizeIdx = 0xFF;                 // HttpMonitorSchema::SIZE_INHERIT (ladder 0..3)
+  int spacerHeight = 10;              // `spacer` px
+  int dividerInset = 0;               // `divider` px in from each side
+  int dividerLineWidth = 1;           // `divider` rule thickness (1..2)
   HttpMonitorSchema::BarSpec barObj;  // object-form bar; overrides `bar` when value >= 0
 };
 
-struct HttpMonitorPreviewSection { const char* heading; std::vector<HttpMonitorPreviewRow> rows; };
+struct HttpMonitorPreviewSection {
+  const char* heading;
+  std::vector<HttpMonitorPreviewRow> rows;
+};
 
 // Row `type` values are HttpMonitorSchema::RowType — the dispatch switch below
 // casts row.type straight to that enum, so the preview can't drift from the
@@ -330,11 +360,16 @@ struct HttpMonitorPreviewSection { const char* heading; std::vector<HttpMonitorP
 // change the dashboard font size).
 static int previewFontForSize(int sizeIdx) {
   switch (sizeIdx) {
-    case 0: return SMALL_FONT_ID;
-    case 1: return UI_10_FONT_ID;
-    case 2: return UI_12_FONT_ID;
-    case 3: return UI_12_FONT_ID;  // BOOKERLY_14 not registered in previews
-    default: return UI_12_FONT_ID; // SIZE_INHERIT
+    case 0:
+      return SMALL_FONT_ID;
+    case 1:
+      return UI_10_FONT_ID;
+    case 2:
+      return UI_12_FONT_ID;
+    case 3:
+      return UI_12_FONT_ID;  // BOOKERLY_14 not registered in previews
+    default:
+      return UI_12_FONT_ID;  // SIZE_INHERIT
   }
 }
 
@@ -420,14 +455,18 @@ static void drawLivenessDial(GfxRenderer& r, int dialX, int dialY) {
 
 static HttpMonitorPreviewRow kvRow(const char* label, const char* value, int bar = -1, bool alert = false) {
   HttpMonitorPreviewRow r;
-  r.label = label; r.value = value; r.bar = bar; r.alert = alert;
+  r.label = label;
+  r.value = value;
+  r.bar = bar;
+  r.alert = alert;
   return r;
 }
 
-static HttpMonitorPreviewRow barObjRow(const char* label, const char* value, int barValue, int segments,
-                                       int widthPct, int align) {
+static HttpMonitorPreviewRow barObjRow(const char* label, const char* value, int barValue, int segments, int widthPct,
+                                       int align) {
   HttpMonitorPreviewRow r;
-  r.label = label; r.value = value;
+  r.label = label;
+  r.value = value;
   r.barObj.value = barValue;
   r.barObj.segments = segments;
   r.barObj.widthPct = widthPct;
@@ -438,7 +477,10 @@ static HttpMonitorPreviewRow barObjRow(const char* label, const char* value, int
 static HttpMonitorPreviewRow textRow(const char* text, int align = 0, bool bold = false, int sizeIdx = 0xFF) {
   HttpMonitorPreviewRow r;
   r.type = static_cast<int>(HttpMonitorSchema::RowType::TEXT);
-  r.text = text; r.align = align; r.bold = bold; r.sizeIdx = sizeIdx;
+  r.text = text;
+  r.align = align;
+  r.bold = bold;
+  r.sizeIdx = sizeIdx;
   return r;
 }
 
@@ -452,14 +494,18 @@ static HttpMonitorPreviewRow spacerRow(int height) {
 static HttpMonitorPreviewRow dividerRow(const char* label, int inset, int lineWidth) {
   HttpMonitorPreviewRow r;
   r.type = static_cast<int>(HttpMonitorSchema::RowType::DIVIDER);
-  r.label = label; r.dividerInset = inset; r.dividerLineWidth = lineWidth;
+  r.label = label;
+  r.dividerInset = inset;
+  r.dividerLineWidth = lineWidth;
   return r;
 }
 
 static HttpMonitorPreviewRow glyphsRow(const char* glyphs, const char* label = nullptr, int align = 0) {
   HttpMonitorPreviewRow r;
   r.type = static_cast<int>(HttpMonitorSchema::RowType::GLYPHS);
-  r.glyphs = glyphs; r.label = label; r.align = align;
+  r.glyphs = glyphs;
+  r.label = label;
+  r.align = align;
   return r;
 }
 
@@ -613,9 +659,15 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
   auto drawGlyph = [&](int gx, int gy, char ch) {
     const int cx = gx, cy = gy;
     switch (ch) {
-      case '#': r.fillRect(cx, cy, 16, 16, true); break;
-      case 'o': r.drawRect(cx, cy, 16, 16); break;
-      case '.': drawPipOn(r, cx + 8, cy + 8, 8); break;
+      case '#':
+        r.fillRect(cx, cy, 16, 16, true);
+        break;
+      case 'o':
+        r.drawRect(cx, cy, 16, 16);
+        break;
+      case '.':
+        drawPipOn(r, cx + 8, cy + 8, 8);
+        break;
       case '+':
         r.drawLine(cx + 8, cy + 2, cx + 8, cy + 13);
         r.drawLine(cx + 2, cy + 8, cx + 13, cy + 8);
@@ -624,7 +676,9 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
         r.drawLine(cx + 3, cy + 3, cx + 12, cy + 12);
         r.drawLine(cx + 3, cy + 12, cx + 12, cy + 3);
         break;
-      case '!': fillUpTriangle(r, cx, cy); break;
+      case '!':
+        fillUpTriangle(r, cx, cy);
+        break;
       case '^':
         r.drawLine(cx + 8, cy, cx, cy + 15);
         r.drawLine(cx + 8, cy, cx + 15, cy + 15);
@@ -635,7 +689,8 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
         r.drawLine(cx + 15, cy, cx + 8, cy + 15);
         r.drawLine(cx, cy, cx + 15, cy);
         break;
-      case ' ': break;
+      case ' ':
+        break;
       default: {
         char buf[2] = {ch, '\0'};
         const int w = r.getTextWidth(SMALL_FONT_ID, buf);
@@ -656,19 +711,21 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
     const int style = (row.bold || row.alert) ? 1 : 0;
     const auto cols = HttpMonitorLayout::computeRowColumns(contentWidth, hasBar);
 
-    const std::string labelStr = r.truncatedText(rowFont, row.label ? row.label : "", cols.labelColMax - markerPad, style);
+    const std::string labelStr =
+        r.truncatedText(rowFont, row.label ? row.label : "", cols.labelColMax - markerPad, style);
     const int labelWidth = r.getTextWidth(rowFont, labelStr.c_str(), style);
 
     int valueWidth = r.getTextWidth(rowFont, row.value ? row.value : "");
-    const std::string valueStr =
-        (valueWidth > cols.valueColMax) ? r.truncatedText(rowFont, row.value ? row.value : "", cols.valueColMax) : (row.value ? row.value : "");
+    const std::string valueStr = (valueWidth > cols.valueColMax)
+                                     ? r.truncatedText(rowFont, row.value ? row.value : "", cols.valueColMax)
+                                     : (row.value ? row.value : "");
     valueWidth = r.getTextWidth(rowFont, valueStr.c_str());
 
     int barX = 0, barSpan = 0;
     if (hasBar) {
-      const auto barResult = HttpMonitorLayout::placeFractionalBar(
-          sidePadding, pageWidth, markerPad + labelWidth, valueWidth, BAR_GAP, bar.widthPct,
-          static_cast<HttpMonitorLayout::BarAlign>(bar.align));
+      const auto barResult =
+          HttpMonitorLayout::placeFractionalBar(sidePadding, pageWidth, markerPad + labelWidth, valueWidth, BAR_GAP,
+                                                bar.widthPct, static_cast<HttpMonitorLayout::BarAlign>(bar.align));
       barX = barResult.barX;
       barSpan = barResult.barSpan;
     }
@@ -777,20 +834,30 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
 
   auto dispatchRow = [&](const HttpMonitorPreviewRow& row, int y, int rowLineH) {
     switch (static_cast<HttpMonitorSchema::RowType>(row.type)) {
-      case HttpMonitorSchema::RowType::SPACER: break;
-      case HttpMonitorSchema::RowType::DIVIDER: drawDivider(row, y); break;
-      case HttpMonitorSchema::RowType::GLYPHS: drawGlyphs(row, y); break;
-      case HttpMonitorSchema::RowType::TEXT: drawTextRow(row, y, rowLineH); break;
-      default: drawKv(row, y, rowLineH); break;  // KV (and BAR)
+      case HttpMonitorSchema::RowType::SPACER:
+        break;
+      case HttpMonitorSchema::RowType::DIVIDER:
+        drawDivider(row, y);
+        break;
+      case HttpMonitorSchema::RowType::GLYPHS:
+        drawGlyphs(row, y);
+        break;
+      case HttpMonitorSchema::RowType::TEXT:
+        drawTextRow(row, y, rowLineH);
+        break;
+      default:
+        drawKv(row, y, rowLineH);
+        break;  // KV (and BAR)
     }
   };
 
   // ---- draw loop: only entries that fully fit the band. ----
   for (int k = 0; k < visibleEntries; ++k) {
     const int i = scrollOffset + k;
-    if (i >= entryCount) break;  // scrollOffset+visibleEntries can pass the end
-                                 // when maxScroll = entryCount-1 — never index
-                                 // past the entry list.
+    if (i >= entryCount)
+      break;  // scrollOffset+visibleEntries can pass the end
+              // when maxScroll = entryCount-1 — never index
+              // past the entry list.
     const int y = HttpMonitorLayout::entryY(entryHeights.data(), scrollOffset, i, contentTop);
     if (y + entryHeights[i] > contentBottom) break;
     const PreviewEntry& e = entries[i];
@@ -823,8 +890,8 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
 
 static void renderHttpMonitorDashboard(GfxRenderer& r) {
   const std::vector<HttpMonitorPreviewSection> sections = {
-    {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}}},
-    {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}}},
+      {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}}},
+      {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}}},
   };
   renderHttpMonitorDashboardGeneric(r, sections, "prod-1", 0, "12:01:02");
 }
@@ -906,10 +973,11 @@ void render_httpmonitor_dashboard_x3() {
 // to prove the entry-based scroll bookkeeping neither clips nor gets stuck.
 static std::vector<HttpMonitorPreviewSection> denseHttpMonitorSections() {
   return {
-    {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}, {"Load", "1.24", -1, false}}},
-    {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}, {"/boot", "12%", 12, false}}},
-    {"Network", {{"eth0 rx", "1.2 MB/s", -1, false}, {"eth0 tx", "340 KB/s", -1, false}, {"Conns", "128", -1, false}}},
-    {"Services", {{"nginx", "up 4d", -1, false}, {"postgres", "up 4d", -1, false}, {"redis", "DOWN", -1, true}}},
+      {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}, {"Load", "1.24", -1, false}}},
+      {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}, {"/boot", "12%", 12, false}}},
+      {"Network",
+       {{"eth0 rx", "1.2 MB/s", -1, false}, {"eth0 tx", "340 KB/s", -1, false}, {"Conns", "128", -1, false}}},
+      {"Services", {{"nginx", "up 4d", -1, false}, {"postgres", "up 4d", -1, false}, {"redis", "DOWN", -1, true}}},
   };
 }
 
@@ -931,12 +999,33 @@ void render_httpmonitor_dense_x3_top() {
 // bookkeeping neither clips nor gets stuck before reaching the final rows.
 static std::vector<HttpMonitorPreviewSection> overflowHttpMonitorSections() {
   return {
-    {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}, {"Load", "1.24", -1, false}, {"Temp", "52C", -1, false}}},
-    {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}, {"/boot", "12%", 12, false}, {"/var", "63%", 63, false}}},
-    {"Network", {{"eth0 rx", "1.2 MB/s", -1, false}, {"eth0 tx", "340 KB/s", -1, false}, {"Conns", "128", -1, false}, {"Drops", "0", -1, false}}},
-    {"Services", {{"nginx", "up 4d", -1, false}, {"postgres", "up 4d", -1, false}, {"redis", "DOWN", -1, true}, {"cron", "up 4d", -1, false}}},
-    {"Sensors", {{"Fan1", "1200rpm", -1, false}, {"Fan2", "1180rpm", -1, false}, {"PSU", "OK", -1, false}, {"UPS", "98%", 98, false}}},
-    {"Backups", {{"Last run", "02:14", -1, false}, {"Size", "4.2 GB", -1, false}, {"Status", "OK", -1, false}, {"Next", "tonight", -1, false}}},
+      {"System",
+       {{"CPU", "23%", 23, false},
+        {"Memory", "6.0/16 GB", 37, false},
+        {"Load", "1.24", -1, false},
+        {"Temp", "52C", -1, false}}},
+      {"Disks",
+       {{"/data", "88%", 88, true}, {"/", "41%", 41, false}, {"/boot", "12%", 12, false}, {"/var", "63%", 63, false}}},
+      {"Network",
+       {{"eth0 rx", "1.2 MB/s", -1, false},
+        {"eth0 tx", "340 KB/s", -1, false},
+        {"Conns", "128", -1, false},
+        {"Drops", "0", -1, false}}},
+      {"Services",
+       {{"nginx", "up 4d", -1, false},
+        {"postgres", "up 4d", -1, false},
+        {"redis", "DOWN", -1, true},
+        {"cron", "up 4d", -1, false}}},
+      {"Sensors",
+       {{"Fan1", "1200rpm", -1, false},
+        {"Fan2", "1180rpm", -1, false},
+        {"PSU", "OK", -1, false},
+        {"UPS", "98%", 98, false}}},
+      {"Backups",
+       {{"Last run", "02:14", -1, false},
+        {"Size", "4.2 GB", -1, false},
+        {"Status", "OK", -1, false},
+        {"Next", "tonight", -1, false}}},
   };
 }
 
@@ -960,7 +1049,7 @@ void render_httpmonitor_overflow_x3_scrolled() {
 // the two, so it's the real test that label/bar/value never collide.
 static std::vector<HttpMonitorPreviewSection> worstCaseHttpMonitorSections() {
   return {
-    {"System", {{"Really Long Metric Label", "9999.99/10000 GB", 62, false}}},
+      {"System", {{"Really Long Metric Label", "9999.99/10000 GB", 62, false}}},
   };
 }
 
@@ -1010,38 +1099,42 @@ void render_httpmonitor_noconfig_x3() {
 
 static std::vector<HttpMonitorPreviewSection> mixedHttpMonitorSections() {
   std::vector<HttpMonitorPreviewSection> s;
-  s.push_back({"System", {
-    kvRow("CPU", "23%", 23),
-    textRow("All services nominal", 1 /* CENTER */, true),
-    kvRow("Memory", "6.0/16 GB", 37),
-    dividerRow("Storage", 10, 2),
-    kvRow("/data", "88%", 88, true),
-    kvRow("/", "41%", 41),
-  }});
-  s.push_back({"Tuned", {
-    barObjRow("cache", "62%", 62, 8, 100, 0 /* LEFT */),
-    kvRow("temp", "52C", -1),
-    barObjRow("buff", "33%", 33, 5, 50, 2 /* RIGHT */),
-    textRow("Log rotation paused; retry once the disk is under 90%", 0 /* LEFT */, false, 0 /* SMALL */),
-    spacerRow(8),
-    kvRow("swap", "4%", 4),
-  }});
-  s.push_back({"LEDs", {
-    glyphsRow("#o#x+!", "status", 0 /* LEFT */),
-    glyphsRow(".o#", nullptr, 1 /* CENTER */),
-    kvRow("eth0 rx", "1.2 MB/s"),
-    kvRow("eth0 tx", "340 KB/s"),
-    dividerRow(nullptr, 0, 1),
-    textRow("Network nominal", 1 /* CENTER */, true),
-  }});
-  s.push_back({"Services", {
-    kvRow("nginx", "up 4d"),
-    kvRow("postgres", "up 4d"),
-    kvRow("redis", "DOWN", -1, true),
-    kvRow("cron", "up 4d"),
-    textRow("Maintenance window 02:00-03:00 UTC", 1 /* CENTER */),
-    kvRow("backup", "OK"),
-  }});
+  s.push_back({"System",
+               {
+                   kvRow("CPU", "23%", 23),
+                   textRow("All services nominal", 1 /* CENTER */, true),
+                   kvRow("Memory", "6.0/16 GB", 37),
+                   dividerRow("Storage", 10, 2),
+                   kvRow("/data", "88%", 88, true),
+                   kvRow("/", "41%", 41),
+               }});
+  s.push_back({"Tuned",
+               {
+                   barObjRow("cache", "62%", 62, 8, 100, 0 /* LEFT */),
+                   kvRow("temp", "52C", -1),
+                   barObjRow("buff", "33%", 33, 5, 50, 2 /* RIGHT */),
+                   textRow("Log rotation paused; retry once the disk is under 90%", 0 /* LEFT */, false, 0 /* SMALL */),
+                   spacerRow(8),
+                   kvRow("swap", "4%", 4),
+               }});
+  s.push_back({"LEDs",
+               {
+                   glyphsRow("#o#x+!", "status", 0 /* LEFT */),
+                   glyphsRow(".o#", nullptr, 1 /* CENTER */),
+                   kvRow("eth0 rx", "1.2 MB/s"),
+                   kvRow("eth0 tx", "340 KB/s"),
+                   dividerRow(nullptr, 0, 1),
+                   textRow("Network nominal", 1 /* CENTER */, true),
+               }});
+  s.push_back({"Services",
+               {
+                   kvRow("nginx", "up 4d"),
+                   kvRow("postgres", "up 4d"),
+                   kvRow("redis", "DOWN", -1, true),
+                   kvRow("cron", "up 4d"),
+                   textRow("Maintenance window 02:00-03:00 UTC", 1 /* CENTER */),
+                   kvRow("backup", "OK"),
+               }});
   return s;
 }
 
@@ -1119,8 +1212,8 @@ int main() {
   RUN_TEST(render_evil_portal);
   RUN_TEST(render_apps_menu);
   // RUN_TEST(render_my_new_activity);  // ← uncomment when ready
-    RUN_TEST(render_countdowntimer);
-    RUN_TEST(render_diceroller);
+  RUN_TEST(render_countdowntimer);
+  RUN_TEST(render_diceroller);
   RUN_TEST(render_httpmonitor_dashboard_x4);
   RUN_TEST(render_httpmonitor_dashboard_x3);
   RUN_TEST(render_httpmonitor_dense_x3_top);

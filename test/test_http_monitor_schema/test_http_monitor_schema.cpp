@@ -5,9 +5,9 @@
 // text/glyphs) and every default is asserted here, not just the happy path.
 // Run: pio test -e native -f test_http_monitor_schema
 
+#include <ArduinoJson.h>
 #include <unity.h>
 
-#include <ArduinoJson.h>
 #include <cstring>
 
 #include "../../src/activities/apps/HttpMonitorSchema.h"
@@ -86,8 +86,8 @@ void test_bar_int_out_of_range_becomes_absent() {
 // ---- bar object: value/segments/width/align ----
 
 void test_bar_object_parses() {
-  const Dashboard d =
-      parse(R"({"sections":[{"rows":[{"label":"D","value":"50%","bar":{"value":50,"segments":5,"width":0.5,"align":"right"}}]}]})");
+  const Dashboard d = parse(
+      R"({"sections":[{"rows":[{"label":"D","value":"50%","bar":{"value":50,"segments":5,"width":0.5,"align":"right"}}]}]})");
   const BarSpec& b = firstRow(d).bar;
   TEST_ASSERT_EQUAL(50, b.value);
   TEST_ASSERT_EQUAL(5, b.segments);
@@ -171,7 +171,8 @@ void test_caps_sections_rows_alerts() {
 // ---- shared formatting: align / bold / size ----
 
 void test_align_parsing() {
-  const Dashboard d = parse(R"({"sections":[{"rows":[{"label":"a","align":"center"},{"label":"b","align":"right"},{"label":"c","align":"bogus"}]}]})");
+  const Dashboard d = parse(
+      R"({"sections":[{"rows":[{"label":"a","align":"center"},{"label":"b","align":"right"},{"label":"c","align":"bogus"}]}]})");
   TEST_ASSERT_EQUAL((int)RowAlign::CENTER, (int)d.sections[0].rows[0].align);
   TEST_ASSERT_EQUAL((int)RowAlign::RIGHT, (int)d.sections[0].rows[1].align);
   TEST_ASSERT_EQUAL((int)RowAlign::LEFT, (int)d.sections[0].rows[2].align);
@@ -203,7 +204,8 @@ void test_bar_row_parses_like_kv() {
 }
 
 void test_text_row_parses_text() {
-  const Dashboard d = parse(R"({"sections":[{"rows":[{"type":"text","text":"some status","align":"center","bold":true}]}]})");
+  const Dashboard d =
+      parse(R"({"sections":[{"rows":[{"type":"text","text":"some status","align":"center","bold":true}]}]})");
   const Row& r = firstRow(d);
   TEST_ASSERT_EQUAL((int)RowType::TEXT, (int)r.type);
   TEST_ASSERT_EQUAL_STRING("some status", r.text);
@@ -212,7 +214,8 @@ void test_text_row_parses_text() {
 }
 
 void test_spacer_height_clamped_2_to_60() {
-  const Dashboard d = parse(R"({"sections":[{"rows":[{"type":"spacer","height":20},{"type":"spacer","height":1},{"type":"spacer","height":100}]}]})");
+  const Dashboard d = parse(
+      R"({"sections":[{"rows":[{"type":"spacer","height":20},{"type":"spacer","height":1},{"type":"spacer","height":100}]}]})");
   TEST_ASSERT_EQUAL((int)RowType::SPACER, (int)d.sections[0].rows[0].type);
   TEST_ASSERT_EQUAL(20, d.sections[0].rows[0].spacerHeight);
   TEST_ASSERT_EQUAL(2, d.sections[0].rows[1].spacerHeight);

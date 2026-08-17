@@ -19,14 +19,13 @@ class CipherActivity final : public Activity {
   State state = SELECT_CIPHER;
 
   static constexpr int CIPHER_COUNT = 7;
-  static constexpr const char* CIPHER_NAMES[CIPHER_COUNT] = {
-    "ROT13", "Caesar", "Vigenere", "XOR", "Atbash", "Base64 Encode", "Base64 Decode"
-  };
+  static constexpr const char* CIPHER_NAMES[CIPHER_COUNT] = {"ROT13",  "Caesar",        "Vigenere",     "XOR",
+                                                             "Atbash", "Base64 Encode", "Base64 Decode"};
 
   int cipherIndex = 0;
   std::string inputText;
   std::string keyText;
-  std::string result;
+  std::string outputText;
 
   bool needsKey() const;
   void computeResult();

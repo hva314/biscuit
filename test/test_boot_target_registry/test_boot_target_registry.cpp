@@ -30,21 +30,17 @@ class Activity {
   virtual ~Activity() = default;
 };
 
-#include "../../src/activities/BootTargetRegistry.h"
 #include "../../src/activities/BootTargetRegistry.cpp"
+#include "../../src/activities/BootTargetRegistry.h"
 
-void test_count_matches_labels_size() {
-  TEST_ASSERT_EQUAL(BootTargets::count(), BootTargets::labels().size());
-}
+void test_count_matches_labels_size() { TEST_ASSERT_EQUAL(BootTargets::count(), BootTargets::labels().size()); }
 
 void test_count_is_nine() {
   // 1 apps-menu sentinel + 8 curated apps.
   TEST_ASSERT_EQUAL(9, BootTargets::count());
 }
 
-void test_index_zero_is_apps_menu_sentinel() {
-  TEST_ASSERT_FALSE(BootTargets::hasFactory(0));
-}
+void test_index_zero_is_apps_menu_sentinel() { TEST_ASSERT_FALSE(BootTargets::hasFactory(0)); }
 
 void test_every_curated_index_has_a_factory() {
   for (size_t i = 1; i < BootTargets::count(); i++) {

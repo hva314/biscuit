@@ -58,7 +58,6 @@ class MilitaryTheme : public BaseTheme {
   Rect drawPopup(const GfxRenderer& renderer, const char* message) const override;
   void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const override;
   void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth) const override;
-  void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label,
-                       const bool isSelected) const override;
+  void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, const bool isSelected) const override;
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const override;
 };

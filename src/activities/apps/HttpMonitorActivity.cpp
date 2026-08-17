@@ -121,8 +121,7 @@ void HttpMonitorActivity::loop() {
   }
 
   // Manual refresh
-  if ((state == SHOWING || state == ERROR) &&
-      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if ((state == SHOWING || state == ERROR) && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     lastPollMs = millis();
     state = FETCHING;
     if (!hasDashboard) requestUpdate(true);
@@ -172,21 +171,20 @@ void HttpMonitorActivity::loop() {
 void HttpMonitorActivity::fetch() {
   if (WiFi.status() != WL_CONNECTED) {
     RADIO.ensureWifi();
-    startActivityForResult(
-        std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-        [this](const ActivityResult& result) {
-          if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
-            {
-              RenderLock lock(*this);
-              fetchError = "WiFi not connected";
-              httpStatusCode = 0;
-              state = ERROR;
-            }
-            requestUpdate();
-          } else {
-            fetch();  // retry now that WiFi is up
-          }
-        });
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) {
+                             if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+                               {
+                                 RenderLock lock(*this);
+                                 fetchError = "WiFi not connected";
+                                 httpStatusCode = 0;
+                                 state = ERROR;
+                               }
+                               requestUpdate();
+                             } else {
+                               fetch();  // retry now that WiFi is up
+                             }
+                           });
     return;
   }
 
@@ -249,8 +247,7 @@ void HttpMonitorActivity::fetch() {
       filter["alerts"][0] = true;
 
       JsonDocument doc;
-      const DeserializationError err =
-          deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+      const DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
       if (err) {
         errMsg = std::string("JSON parse failed: ") + err.c_str();
         LOG_ERR("HTTPMON", "JSON parse failed: %s", err.c_str());
@@ -478,7 +475,7 @@ void HttpMonitorActivity::renderDashboard() {
   const int updatedW = (updated[0] != '\0') ? renderer.getTextWidth(SMALL_FONT_ID, updated) : 0;
   constexpr int DIAL_SIZE = 24;
   const int dialX = pageWidth - metrics.contentSidePadding - DIAL_SIZE;  // 436 on X4
-  const int updatedX = dialX - 8 - updatedW;  // timestamp right edge, 8px clear of the dial
+  const int updatedX = dialX - 8 - updatedW;                             // timestamp right edge, 8px clear of the dial
   const int titleZone = pageWidth - 2 * metrics.contentSidePadding - updatedW - DIAL_SIZE - 2 * 8;
 
   const int titleLineH = renderer.getLineHeight(UI_12_FONT_ID);
@@ -504,8 +501,7 @@ void HttpMonitorActivity::renderDashboard() {
       int dx;
       int dy;
     } kHandSteps[12] = {
-        {0, -8}, {4, -7}, {7, -4}, {8, 0}, {7, 4}, {4, 7},
-        {0, 8},  {-4, 7}, {-7, 4}, {-8, 0}, {-7, -4}, {-4, -7},
+        {0, -8}, {4, -7}, {7, -4}, {8, 0}, {7, 4}, {4, 7}, {0, 8}, {-4, 7}, {-7, 4}, {-8, 0}, {-7, -4}, {-4, -7},
     };
     const int ccx = dialX + DIAL_SIZE / 2;
     const int ccy = headerY + headerH / 2;
@@ -533,8 +529,7 @@ void HttpMonitorActivity::renderDashboard() {
   // dividers, glyph bands), so the scroll model is a prefix sum over
   // entryHeights[] (HttpMonitorLayout::entryY / computeScrollMetrics), not the
   // old uniform-pitch line model.
-  static constexpr int MAX_ENTRIES = HttpMonitorSchema::MAX_SECTIONS *
-                                         (1 + HttpMonitorSchema::MAX_ROWS_PER_SECTION) +
+  static constexpr int MAX_ENTRIES = HttpMonitorSchema::MAX_SECTIONS * (1 + HttpMonitorSchema::MAX_ROWS_PER_SECTION) +
                                      1 + HttpMonitorSchema::MAX_ALERTS;
   struct RenderEntry {
     const HttpMonitorSchema::Row* row = nullptr;  // valid for typed rows
@@ -699,8 +694,7 @@ void HttpMonitorActivity::renderDashboard() {
     const bool hasBar = row.bar.value >= 0;
     const auto cols = HttpMonitorLayout::computeRowColumns(contentWidth, hasBar);
     const int markerPad = row.alert() ? 10 : 0;
-    const EpdFontFamily::Style style =
-        (row.bold() || row.alert()) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    const EpdFontFamily::Style style = (row.bold() || row.alert()) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
 
     const std::string labelStr = renderer.truncatedText(rowFont, row.label, cols.labelColMax - markerPad, style);
     const int labelWidth = renderer.getTextWidth(rowFont, labelStr.c_str(), style);
@@ -757,8 +751,7 @@ void HttpMonitorActivity::renderDashboard() {
     const int rowLineH = renderer.getLineHeight(rowFont) + 6;
     const bool alert = row.alert();
     const int markerPad = alert ? 10 : 0;
-    const EpdFontFamily::Style style =
-        (row.bold() || alert) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    const EpdFontFamily::Style style = (row.bold() || alert) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     const auto lines = renderer.wrappedText(rowFont, row.text, contentWidth - markerPad, 2);
     int ty = y;
     for (const auto& line : lines) {
@@ -873,9 +866,10 @@ void HttpMonitorActivity::renderDashboard() {
   // ---- Draw the visible entries ----
   for (int k = 0; k < visibleEntries; ++k) {
     const int i = scrollOffset + k;
-    if (i >= entryCount) break;  // scrollOffset+visibleEntries can pass the end
-                                 // when maxScroll = entryCount-1 (single tall
-                                 // trailing row) — never index past the list.
+    if (i >= entryCount)
+      break;  // scrollOffset+visibleEntries can pass the end
+              // when maxScroll = entryCount-1 (single tall
+              // trailing row) — never index past the list.
     const int y = HttpMonitorLayout::entryY(entryHeights, scrollOffset, i, contentTop);
     const RenderEntry& e = entries[i];
     // Safety net: never paint a row past the content band. Only reachable with
@@ -893,8 +887,7 @@ void HttpMonitorActivity::renderDashboard() {
       const std::string alertStr =
           renderer.truncatedText(rowFontGlobal, e.text, contentWidth / 2 - 10, EpdFontFamily::BOLD);
       drawAlertMarker(metrics.contentSidePadding, y, rowLineHGlobal);
-      renderer.drawText(rowFontGlobal, metrics.contentSidePadding + 10, y, alertStr.c_str(), true,
-                        EpdFontFamily::BOLD);
+      renderer.drawText(rowFontGlobal, metrics.contentSidePadding + 10, y, alertStr.c_str(), true, EpdFontFamily::BOLD);
     }
   }
 

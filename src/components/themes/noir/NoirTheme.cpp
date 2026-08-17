@@ -129,7 +129,8 @@ void NoirTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
   int rightSpace = NoirMetrics::values.contentSidePadding;
 
   if (rightLabel) {
-    auto truncatedRightLabel = renderer.truncatedText(SMALL_FONT_ID, rightLabel, maxListValueWidth, EpdFontFamily::REGULAR);
+    auto truncatedRightLabel =
+        renderer.truncatedText(SMALL_FONT_ID, rightLabel, maxListValueWidth, EpdFontFamily::REGULAR);
     int rightLabelWidth = renderer.getTextWidth(SMALL_FONT_ID, truncatedRightLabel.c_str());
     renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - NoirMetrics::values.contentSidePadding - rightLabelWidth,
                       rect.y + 7, truncatedRightLabel.c_str(), false);  // white text
@@ -138,7 +139,8 @@ void NoirTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
 
   auto truncatedLabel = renderer.truncatedText(
       UI_10_FONT_ID, label, rect.width - NoirMetrics::values.contentSidePadding - rightSpace, EpdFontFamily::REGULAR);
-  renderer.drawText(UI_10_FONT_ID, currentX, rect.y + 6, truncatedLabel.c_str(), false, EpdFontFamily::REGULAR);  // white text
+  renderer.drawText(UI_10_FONT_ID, currentX, rect.y + 6, truncatedLabel.c_str(), false,
+                    EpdFontFamily::REGULAR);  // white text
 }
 
 void NoirTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
@@ -160,8 +162,8 @@ void NoirTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::ve
     }
 
     // White text if this tab is selected, black text otherwise
-    renderer.drawText(UI_10_FONT_ID, currentX + hPaddingInSelection, rect.y + 6, tab.label,
-                      !tab.selected, EpdFontFamily::REGULAR);
+    renderer.drawText(UI_10_FONT_ID, currentX + hPaddingInSelection, rect.y + 6, tab.label, !tab.selected,
+                      EpdFontFamily::REGULAR);
 
     currentX += tabWidth + NoirMetrics::values.tabSpacing;
   }
@@ -333,14 +335,16 @@ void NoirTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       // Black filled rounded button with white text
       renderer.fillRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, cornerRadius, Color::Black);
-      if (!BaseTheme::drawArrowIfNeeded(renderer, labels[i], x + buttonWidth / 2, pageHeight - buttonY + buttonHeight / 2, 5, false)) {
+      if (!BaseTheme::drawArrowIfNeeded(renderer, labels[i], x + buttonWidth / 2,
+                                        pageHeight - buttonY + buttonHeight / 2, 5, false)) {
         const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
         const int textX = x + (buttonWidth - 1 - textWidth) / 2;
         renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i], false);  // white text
       }
     } else {
       // Empty button: just a thin outline
-      renderer.drawRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, 1, cornerRadius, true);
+      renderer.drawRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, 1, cornerRadius,
+                               true);
     }
   }
 
@@ -358,8 +362,7 @@ void NoirTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       const int y = topHintButtonY + i * (buttonHeight + 5);
       // Black filled rounded button
-      renderer.fillRoundedRect(x, y, buttonWidth, buttonHeight, cornerRadius,
-                               true, false, true, false, Color::Black);
+      renderer.fillRoundedRect(x, y, buttonWidth, buttonHeight, cornerRadius, true, false, true, false, Color::Black);
       if (!BaseTheme::drawArrowIfNeeded(renderer, labels[i], x + buttonWidth / 2, y + buttonHeight / 2, 5, false)) {
         // White rotated text
         const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);

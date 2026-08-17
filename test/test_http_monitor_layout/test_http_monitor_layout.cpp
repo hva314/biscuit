@@ -35,7 +35,7 @@ void test_row_columns_without_bar_gives_same_split() {
 void test_bar_span_is_remaining_room_between_label_and_value() {
   // pageWidth=440+2*20=480, sidePadding=20, labelWidth=60, valueWidth=60, gap=10
   const auto span = computeBarSpan(/*contentSidePadding=*/20, /*pageWidth=*/480, /*labelWidth=*/60,
-                                    /*valueWidth=*/60, /*barColMax=*/1000, /*gap=*/10);
+                                   /*valueWidth=*/60, /*barColMax=*/1000, /*gap=*/10);
   // barX = 20+60+10 = 90; barRight = 480-20-60-10 = 390; span = 300
   TEST_ASSERT_EQUAL(90, span.barX);
   TEST_ASSERT_EQUAL(300, span.barSpan);
@@ -55,9 +55,7 @@ void test_bar_span_never_negative() {
   TEST_ASSERT_TRUE(span.barSpan >= 0);
 }
 
-void test_min_bar_span_floor_is_24() {
-  TEST_ASSERT_EQUAL(24, MIN_BAR_SPAN);
-}
+void test_min_bar_span_floor_is_24() { TEST_ASSERT_EQUAL(24, MIN_BAR_SPAN); }
 
 // ---- placeFractionalBar (bar.width < 1.0) ----
 
@@ -99,15 +97,11 @@ void test_total_lines_adds_alerts_heading_plus_each_alert() {
   TEST_ASSERT_EQUAL(10, computeTotalLines(2, 4, 3));
 }
 
-void test_total_lines_no_alerts_heading_when_alert_count_zero() {
-  TEST_ASSERT_EQUAL(6, computeTotalLines(2, 4, 0));
-}
+void test_total_lines_no_alerts_heading_when_alert_count_zero() { TEST_ASSERT_EQUAL(6, computeTotalLines(2, 4, 0)); }
 
 // ---- per-entry heights ----
 
-void test_kv_entry_height_is_one_line() {
-  TEST_ASSERT_EQUAL(30, kvEntryHeight(/*lineH=*/30));
-}
+void test_kv_entry_height_is_one_line() { TEST_ASSERT_EQUAL(30, kvEntryHeight(/*lineH=*/30)); }
 
 void test_text_entry_height_wraps_to_line_count() {
   TEST_ASSERT_EQUAL(30, textEntryHeight(/*lineH=*/30, /*lineCount=*/1));
@@ -200,17 +194,11 @@ void test_entry_y_is_prefix_sum_from_scroll_offset() {
 
 // ---- clampScrollOffset ----
 
-void test_clamp_scroll_offset_clamps_high() {
-  TEST_ASSERT_EQUAL(15, clampScrollOffset(999, 15));
-}
+void test_clamp_scroll_offset_clamps_high() { TEST_ASSERT_EQUAL(15, clampScrollOffset(999, 15)); }
 
-void test_clamp_scroll_offset_clamps_low() {
-  TEST_ASSERT_EQUAL(0, clampScrollOffset(-5, 15));
-}
+void test_clamp_scroll_offset_clamps_low() { TEST_ASSERT_EQUAL(0, clampScrollOffset(-5, 15)); }
 
-void test_clamp_scroll_offset_passes_through_in_range() {
-  TEST_ASSERT_EQUAL(7, clampScrollOffset(7, 15));
-}
+void test_clamp_scroll_offset_passes_through_in_range() { TEST_ASSERT_EQUAL(7, clampScrollOffset(7, 15)); }
 
 // ---- computeTotalPages ----
 
@@ -227,9 +215,7 @@ void test_total_pages_rounds_up_partial_last_page() {
   TEST_ASSERT_EQUAL(2, computeTotalPages(/*totalEntries=*/11, /*pageSize=*/10));
 }
 
-void test_total_pages_single_page() {
-  TEST_ASSERT_EQUAL(1, computeTotalPages(5, 10));
-}
+void test_total_pages_single_page() { TEST_ASSERT_EQUAL(1, computeTotalPages(5, 10)); }
 
 // ============================================================
 void setUp() {}

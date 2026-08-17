@@ -31,7 +31,7 @@ struct Config {
   int timeoutMs = DEFAULT_TIMEOUT_MS;
   int fullRefreshEvery = DEFAULT_FULL_REFRESH_EVERY;  // 0 disables periodic full refresh
   std::string title = "HTTP Monitor";
-  std::string authHeader;  // optional, sent verbatim as an HTTP header, e.g. "Authorization: Bearer abc123"
+  std::string authHeader;            // optional, sent verbatim as an HTTP header, e.g. "Authorization: Bearer abc123"
   int fontSize = DEFAULT_FONT_SIZE;  // initial dashboard font size; overridden at runtime by the sidecar file
 };
 

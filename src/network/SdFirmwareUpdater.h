@@ -16,14 +16,14 @@ class SdFirmwareUpdater {
  public:
   enum class Error : uint8_t {
     OK = 0,
-    NoFile,        // path does not exist on the SD card
-    FileOpenError, // could not open the file
-    TooSmall,      // image smaller than the minimum valid app image
-    TooLarge,      // image larger than the OTA partition
-    BadMagic,      // not an ESP32 image (missing 0xE9 header byte)
-    NoPartition,   // no OTA partition available
-    FileReadError, // SD read failed mid-flash
-    FlashError,    // esp_ota_* call failed
+    NoFile,         // path does not exist on the SD card
+    FileOpenError,  // could not open the file
+    TooSmall,       // image smaller than the minimum valid app image
+    TooLarge,       // image larger than the OTA partition
+    BadMagic,       // not an ESP32 image (missing 0xE9 header byte)
+    NoPartition,    // no OTA partition available
+    FileReadError,  // SD read failed mid-flash
+    FlashError,     // esp_ota_* call failed
   };
 
   enum class PumpResult : uint8_t { InProgress, Done, Error };

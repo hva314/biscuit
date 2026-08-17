@@ -40,9 +40,9 @@ enum class RowAlign : uint8_t { LEFT = 0, CENTER, RIGHT };
 // and any object bar with width >= 1.0 span label->value; fractional widths use
 // align to place the shorter bar.
 struct BarSpec {
-  int value = -1;  // -1 = no bar, else 0..100
-  int segments = 1;       // 1..24 segment blocks
-  int widthPct = 100;     // 10..100 (% of the label->value span)
+  int value = -1;      // -1 = no bar, else 0..100
+  int segments = 1;    // 1..24 segment blocks
+  int widthPct = 100;  // 10..100 (% of the label->value span)
   RowAlign align = RowAlign::LEFT;
   bool fullWidth = true;
 };
@@ -56,7 +56,7 @@ struct Row {
   RowType type = RowType::KV;
   RowAlign align = RowAlign::LEFT;
   uint8_t sizeIdx = SIZE_INHERIT;
-  uint8_t flags = 0;  // bit0 = alert, bit1 = bold
+  uint8_t flags = 0;         // bit0 = alert, bit1 = bold
   int spacerHeight = 10;     // 2..60 px
   int dividerInset = 0;      // >= 0 px from each side
   int dividerLineWidth = 1;  // 1..2 px

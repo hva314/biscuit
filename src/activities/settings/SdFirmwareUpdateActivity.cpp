@@ -16,15 +16,24 @@ constexpr char kFirmwarePath[] = "/firmware.bin";
 // reason on screen -- it is the only diagnostic channel this device has.
 const char* describeError(const SdFirmwareUpdater::Error err) {
   switch (err) {
-    case SdFirmwareUpdater::Error::OK:            return "";
-    case SdFirmwareUpdater::Error::NoFile:        return "firmware.bin not found on SD";
-    case SdFirmwareUpdater::Error::FileOpenError: return "Could not open firmware.bin";
-    case SdFirmwareUpdater::Error::TooSmall:      return "File too small to be firmware";
-    case SdFirmwareUpdater::Error::TooLarge:      return "Image larger than the OTA slot";
-    case SdFirmwareUpdater::Error::BadMagic:      return "Not an ESP32 firmware image";
-    case SdFirmwareUpdater::Error::NoPartition:   return "No OTA partition on this device";
-    case SdFirmwareUpdater::Error::FileReadError: return "SD read failed during flash";
-    case SdFirmwareUpdater::Error::FlashError:    return "Flash write failed";
+    case SdFirmwareUpdater::Error::OK:
+      return "";
+    case SdFirmwareUpdater::Error::NoFile:
+      return "firmware.bin not found on SD";
+    case SdFirmwareUpdater::Error::FileOpenError:
+      return "Could not open firmware.bin";
+    case SdFirmwareUpdater::Error::TooSmall:
+      return "File too small to be firmware";
+    case SdFirmwareUpdater::Error::TooLarge:
+      return "Image larger than the OTA slot";
+    case SdFirmwareUpdater::Error::BadMagic:
+      return "Not an ESP32 firmware image";
+    case SdFirmwareUpdater::Error::NoPartition:
+      return "No OTA partition on this device";
+    case SdFirmwareUpdater::Error::FileReadError:
+      return "SD read failed during flash";
+    case SdFirmwareUpdater::Error::FlashError:
+      return "Flash write failed";
   }
   return "Unknown error";
 }
@@ -132,10 +141,10 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
 
       int y = top + height + metrics.verticalSpacing;
-      GUI.drawProgressBar(renderer,
-                          Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2,
-                               metrics.progressBarHeight},
-                          percent, 100);
+      GUI.drawProgressBar(
+          renderer,
+          Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+          percent, 100);
 
       y += metrics.progressBarHeight + metrics.verticalSpacing;
       renderer.drawCenteredText(UI_10_FONT_ID, y, (std::to_string(percent) + "%").c_str());

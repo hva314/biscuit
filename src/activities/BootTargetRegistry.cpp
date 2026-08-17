@@ -80,15 +80,8 @@ using MakeFn = std::unique_ptr<Activity> (*)(GfxRenderer&, MappedInputManager&);
 
 // Index-aligned with kMeta above.
 constexpr std::array<MakeFn, 9> kMakers = {
-    nullptr,
-    &makeClock,
-    &makeHttpMonitor,
-    &makeBatteryMonitor,
-    &makeFileBrowser,
-    &makeCalculator,
-    &makeReader,
-    &makeDeviceInfo,
-    &makeDiceRoller,
+    nullptr,         &makeClock,  &makeHttpMonitor, &makeBatteryMonitor, &makeFileBrowser,
+    &makeCalculator, &makeReader, &makeDeviceInfo,  &makeDiceRoller,
 };
 
 static_assert(kMakers.size() == kMeta.size(), "kMakers and kMeta must stay index-aligned");

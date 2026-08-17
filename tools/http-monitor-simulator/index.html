@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTP Monitor — visual simulator</title>
+<!--
+  Self-contained visual simulator for the biscuit HTTP Monitor e-ink screen.
+
+  Mirrors the four firmware render paths (HttpMonitorActivity.cpp):
+    no-config / fetching / error / showing
+  and the shared layout math (HttpMonitorLayout.h) VERBATIM in JS.
+
+  IMPORTANT — this file is self-contained by design:
+    * zero external assets, no CDN, no <link>, no @import
+    * no fetch()/XHR, no network access
+    * all fonts are browser-native; every width/truncation/bar-span decision
+      comes from the metrics table below (NOT ctx.measureText)
+  Open it directly in a browser; it renders on its own.
+-->
+<style>
+  :root {
+    --paper: #ffffff;
+    --ink: #000000;
+    --panel: #f2f2f2;
+    --line: #d0d0d0;
+    --accent: #1a73e8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--panel); color: #1a1a1a; }
+  body { font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  #page { display: flex; gap: 18px; padding: 18px; align-items: flex-start; }
+
+  /* ---------- canvas ---------- */
+  #canvas-wrap { position: relative; flex: 0 0 auto; }
+  canvas#screen {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  }
+  #xy-readout {
+    position: absolute; top: 6px; left: 6px;
+    background: #000; color: #fff;
+    font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    padding: 2px 6px; pointer-events: none;
+  }
+
+  /* ---------- controls ---------- */
+  #controls { flex: 0 0 340px; display: flex; flex-direction: column; gap: 12px; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0; padding: 8px 10px; background: #fafafa; }
+  legend { font-weight: 600; font-size: 12px; padding: 0 4px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; flex-wrap: wrap; }
+  .row label { font-size: 12px; min-width: 78px; }
+  .row .hint { font-size: 11px; color: #666; }
+
+  button, select, input[type=text], textarea {
+    font: inherit; border: 1px solid var(--line); border-radius: 4px; background: #fff;
+  }
+  button { padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.sample { font-size: 12px; padding: 3px 8px; }
+  select, input[type=text] { padding: 3px 6px; }
+  input[type=range] { flex: 1 1 auto; }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  textarea#json {
+    width: 100%; height: 230px; resize: vertical;
+    font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace;
+    padding: 6px; white-space: pre; tab-size: 2;
+  }
+  #json-err {
+    display: none; color: #b00020; font-size: 12px; margin-top: 4px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #byte-readout { font-size: 12px; margin-top: 4px; }
+  #byte-readout.over { color: #b00020; font-weight: 700; }
+
+  #page-ind { font: 12px ui-monospace, Menlo, Consolas, monospace; min-width: 52px; text-align: center; }
+  .state-pills { display: flex; flex-wrap: wrap; gap: 4px; }
+  .state-pills button { font-size: 11.5px; padding: 3px 8px; }
+  .state-pills button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .font-ladder { display: flex; gap: 4px; }
+  .font-ladder button { font-size: 11.5px; padding: 3px 8px; }
+  .font-ladder button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .columns { display: flex; gap: 14px; }
+  .columns > div { flex: 1 1 0; }
+  .note { font-size: 11px; color: #666; }
+</style>
+</head>
+<body>
+<div id="page">
+
+  <!-- ============================ CANVAS ============================ -->
+  <div id="canvas-wrap">
+    <canvas id="screen" width="480" height="800"></canvas>
+    <div id="xy-readout">x,y</div>
+  </div>
+
+  <!-- =========================== CONTROLS =========================== -->
+  <div id="controls">
+
+    <fieldset>
+      <legend>Screen state</legend>
+      <div class="row">
+        <label>Device</label>
+        <select id="device">
+          <option value="x4">X4 · 480×800</option>
+          <option value="x3">X3 · 528×792</option>
+        </select>
+        <label>Font ladder</label>
+        <span class="font-ladder" id="ladder">
+          <button data-idx="0">0 SMALL</button>
+          <button data-idx="1">1 UI_10</button>
+          <button data-idx="2" class="active">2 UI_12</button>
+          <button data-idx="3">3 BOOK</button>
+        </span>
+      </div>
+      <div class="row">
+        <label>State</label>
+        <span class="state-pills" id="state-pills">
+          <button data-state="no-config">no-config</button>
+          <button data-state="fetching">fetching</button>
+          <button data-state="error">error</button>
+          <button data-state="showing" class="active">showing</button>
+        </span>
+      </div>
+      <div class="row">
+        <label>Config title</label>
+        <input type="text" id="config-title" value="HTTP Monitor" size="18"
+               title="Header title for fetching/error/no-config (firmware sources this from monitor.conf)">
+      </div>
+      <details style="margin-top:6px">
+        <summary style="font-size:12px">Error-state fields</summary>
+        <div class="row">
+          <label>HTTP code</label>
+          <input type="text" id="http-code" value="404" size="5" title=">0 shows &quot;HTTP n&quot;, else &quot;Connection failed&quot;">
+        </div>
+        <div class="row">
+          <label>Error text</label>
+          <input type="text" id="fetch-error" value="Not Found" size="26" title="Wrapped up to 3 lines, centered">
+        </div>
+        <div class="row">
+          <label>Config error</label>
+          <input type="text" id="config-error" value="" size="26" title="Optional trailing line on the no-config screen">
+        </div>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>Payload JSON <span class="hint">(≤8 KB)</span></legend>
+      <textarea id="json" spellcheck="false"></textarea>
+      <div id="json-err"></div>
+      <div id="byte-readout"></div>
+      <div class="row" style="margin-top:6px">
+        <span class="note">Samples:</span>
+        <button class="sample" data-sample="simple">simple legacy</button>
+        <button class="sample" data-sample="dense">dense (all types)</button>
+        <button class="sample" data-sample="compact">compact SMALL</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Scroll <span class="hint">(per-entry, showing state)</span></legend>
+      <div class="row">
+        <button id="scroll-up" title="scroll up">▲ Up</button>
+        <button id="scroll-down" title="scroll down">▼ Down</button>
+        <span id="page-ind">1/1</span>
+      </div>
+      <div class="row">
+        <label>Offset</label>
+        <input type="range" id="scroll-slider" min="0" max="0" value="0" step="1">
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Liveness dial <span class="hint">(24×24, far-right header)</span></legend>
+      <div class="row">
+        <label><input type="checkbox" id="spinner-auto" checked> autoplay 1 Hz</label>
+        <button id="spinner-step">step +1</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Reviewer aid</legend>
+      <div class="row">
+        <label>Crosshair</label>
+        <label><input type="checkbox" id="crosshair-on" checked> hover x,y + lines</label>
+      </div>
+      <div class="note">
+        All geometry is integer, 1-bit paper/ink. Widths/truncation/bar spans come
+        from the font metrics table (see &quot;Font metrics&quot; in the source), not
+        from the browser's text measurement. Bar math mirrors HttpMonitorLayout.h
+        post-fix (spec §2): label/value = contentWidth/2, no 1/3 bar cap, 24 px
+        floor, flush fill.
+      </div>
+    </fieldset>
+
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * Font metrics
+ * ---------------------------------------------------------------------
+ * lineHeight = GfxRenderer::getLineHeight(fontId) = EpdFontData.advanceY.
+ * avgCharWidth = mean advanceX over ASCII 32..126 (12.4 fixed-point: 16 units
+ * per pixel), computed from the real glyph tables in the font headers.
+ *
+ *   SMALL       notosans_8_regular.h     advanceY 23   avgChar 8.897
+ *   UI_10       ubuntu_10_regular.h      advanceY 24   avgChar 10.938
+ *   UI_12       ubuntu_12_regular.h      advanceY 29   avgChar 13.131
+ *   BOOKERLY_14 bookerly_14_regular.h    advanceY 38   avgChar 16.724
+ *
+ * Row height lineH(font) = getLineHeight(font) + 6, so:
+ *   29 / 30 / 35 / 44  (SMALL / UI_10 / UI_12 / BOOKERLY_14).
+ * UI_12 lineHeight = 29 px confirmed against the spec.
+ * ===================================================================== */
+const FONT_METRICS = {
+  0: { name: "SMALL",       lineHeight: 23, avgCharWidth: 8.897  },
+  1: { name: "UI_10",       lineHeight: 24, avgCharWidth: 10.938 },
+  2: { name: "UI_12",       lineHeight: 29, avgCharWidth: 13.131 },
+  3: { name: "BOOKERLY_14", lineHeight: 38, avgCharWidth: 16.724 },
+};
+
+// Browser fonts used for GLYPH SHAPES only. Sizes are the device point sizes;
+// a per-font horizontal scale (see makeFontScaler) stretches the browser text to
+// the metrics table width so drawn text lines up with the layout math.
+const BROWSER_FONTS = {
+  0: { family: "ui-monospace, Menlo, Consolas, monospace", px: 8  },
+  1: { family: "ui-sans-serif, system-ui, sans-serif",     px: 10 },
+  2: { family: "ui-sans-serif, system-ui, sans-serif",     px: 12 },
+  3: { family: "Georgia, 'Times New Roman', serif",        px: 14 },
+};
+
+// ---- firmware constants (Classic theme metrics, BaseTheme.h) ----
+const METRICS = { topPadding: 5, headerHeight: 45, verticalSpacing: 10, contentSidePadding: 20, buttonHintsHeight: 40 };
+const BAR_GAP = 10;                       // HttpMonitorActivity.cpp
+const MAX_BODY_BYTES = 8192;
+const CONFIG_PATH = "/biscuit/monitor.conf";
+const SMALL = 0, UI_10 = 1, UI_12 = 2, BOOKERLY_14 = 3;
+const LADDER_FONTS = [SMALL, UI_10, UI_12, BOOKERLY_14];
+
+// ---- app state (mutable) ----
+let device = "x4";
+let pageW = 480, pageH = 800;
+let state = "showing";
+let globalLadder = 2;                     // effective row font when a row has no size override
+let scrollOffset = 0;
+let spinnerFrame = 0;
+let spinnerAuto = true;
+let crosshairOn = true;
+let hover = null;                         // {x,y} in device pixels
+let configTitle = "HTTP Monitor";
+let httpCode = 404;
+let fetchError = "Not Found";
+let configError = "";
+let parsed = null;                        // { title, updated, sections[], alerts[] }
+let parseError = null;
+
+/* =====================================================================
+ * Layout math — ported VERBATIM from HttpMonitorLayout.h.
+ * ===================================================================== */
+
+// HttpMonitorLayout::computeRowColumns — post-fix: label/value each get
+// contentWidth/2, no barColMax (the 1/3 cap is removed by spec §2).
+function computeRowColumns(contentWidth, hasBar) {
+  return { labelColMax: Math.floor(contentWidth / 2), valueColMax: Math.floor(contentWidth / 2) };
+}
+
+// HttpMonitorLayout::computeBarSpan — post-fix: bar spans whatever is left
+// between label and value, NO contentWidth/3 cap.
+function computeBarSpan(contentSidePadding, pageWidth, labelWidth, valueWidth, gap) {
+  const barX = contentSidePadding + labelWidth + gap;
+  const barRight = pageWidth - contentSidePadding - valueWidth - gap;
+  let barSpan = barRight - barX;
+  if (barSpan < 0) barSpan = 0;
+  return { barX, barSpan };
+}
+
+// HttpMonitorLayout::computeTotalPages — ceil division.
+function computeTotalPages(totalLines, pageSize) {
+  if (pageSize <= 0) return 1;
+  return Math.floor((totalLines + pageSize - 1) / pageSize);
+}
+
+// Per-entry scroll (spec §2): entry i's y = contentTop + Σ heights[scroll..i-1].
+function entryY(heights, scroll, i) {
+  let y = 0;
+  for (let k = scroll; k < i; k++) y += heights[k];
+  return y;
+}
+// Count of entries visible from index 0 within the viewport.
+function computeVisibleEntries(heights, contentTop, contentBottom) {
+  const room = contentBottom - contentTop;
+  let used = 0, n = 0;
+  for (const h of heights) {
+    if (used + h > room) break;
+    used += h; n++;
+  }
+  return n;
+}
+const clampScrollOffset = (o, max) => (o > max ? max : o < 0 ? 0 : o);
+
+/* =====================================================================
+ * Text measurement — metrics table only (no ctx.measureText for layout).
+ * ===================================================================== */
+function lineH(fontId) { return FONT_METRICS[fontId].lineHeight + 6; }   // getLineHeight + 6
+function smallLineH()   { return FONT_METRICS[SMALL].lineHeight + 4; }   // getLineHeight(SMALL)+4
+function textWidth(fontId, str) { return Math.round(str.length * FONT_METRICS[fontId].avgCharWidth); }
+
+function truncatedText(fontId, str, maxWidth) {
+  if (!str) return "";
+  if (textWidth(fontId, str) <= maxWidth) return str;
+  let n = Math.floor(maxWidth / FONT_METRICS[fontId].avgCharWidth);
+  while (n > 0 && textWidth(fontId, str.slice(0, n)) > maxWidth) n--;
+  return str.slice(0, Math.max(0, n));
+}
+
+// Wraps to at most maxLines (like GfxRenderer::wrappedText).
+function wrappedText(fontId, str, maxWidth, maxLines) {
+  const lines = [];
+  let rest = str || "";
+  while (rest.length > 0 && lines.length < maxLines) {
+    if (textWidth(fontId, rest) <= maxWidth) { lines.push(rest); break; }
+    let n = Math.floor(maxWidth / FONT_METRICS[fontId].avgCharWidth);
+    while (n > 0 && textWidth(fontId, rest.slice(0, n)) > maxWidth) n--;
+    if (n <= 0) n = 1;
+    lines.push(rest.slice(0, n));
+    rest = rest.slice(n).replace(/^\s+/, "");
+  }
+  return lines;
+}
+
+/* =====================================================================
+ * 1-bit renderer — strict monochrome, integer coords.
+ * pixels[] is RGBA ImageData; every write is 0 (ink) or 255 (paper).
+ * ===================================================================== */
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d", { alpha: false });
+let imgData = null, pixels = null;
+
+function resizeBuffer(w, h) {
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = (w * 2) + "px";
+  canvas.style.height = (h * 2) + "px";
+  imgData = ctx.createImageData(w, h);
+  pixels = imgData.data;
+  clearBuffer();
+}
+function clearBuffer() {
+  for (let i = 0; i < pixels.length; i += 4) { pixels[i] = 255; pixels[i + 1] = 255; pixels[i + 2] = 255; pixels[i + 3] = 255; }
+}
+function setPixel(x, y) {
+  if (x < 0 || y < 0 || x >= pageW || y >= pageH) return;
+  const i = (y * pageW + x) * 4;
+  pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0;
+}
+function fillRect(x, y, w, h) {
+  x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+  if (w <= 0 || h <= 0) return;
+  for (let yy = y; yy < y + h; yy++) {
+    if (yy < 0 || yy >= pageH) continue;
+    for (let xx = x; xx < x + w; xx++) {
+      if (xx < 0 || xx >= pageW) continue;
+      const i = (yy * pageW + xx) * 4;
+      pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0;
+    }
+  }
+}
+function drawRect(x, y, w, h, lw) {
+  x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+  const t = Math.max(1, Math.round(lw || 1));
+  fillRect(x, y, w, t);            // top
+  fillRect(x, y + h - t, w, t);    // bottom
+  fillRect(x, y, t, h);            // left
+  fillRect(x + w - t, y, t, h);    // right
+}
+// Bresenham-ish line with thickness.
+function drawLine(x1, y1, x2, y2, lw) {
+  x1 = Math.round(x1); y1 = Math.round(y1); x2 = Math.round(x2); y2 = Math.round(y2);
+  const t = Math.max(1, Math.round(lw || 1));
+  let dx = Math.abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+  let dy = -Math.abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    fillRect(x1 - Math.floor(t / 2), y1 - Math.floor(t / 2), t, t);
+    if (x1 === x2 && y1 === y2) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x1 += sx; }
+    if (e2 <= dx) { err += dx; y1 += sy; }
+  }
+}
+// Ring: pixels within ~0.7px of radius r.
+function drawCircle(cx, cy, r) {
+  cx = Math.round(cx); cy = Math.round(cy); r = Math.round(r);
+  const lo = r - 0.7, hi = r + 0.7;
+  for (let yy = cy - r - 1; yy <= cy + r + 1; yy++) {
+    for (let xx = cx - r - 1; xx <= cx + r + 1; xx++) {
+      const d = Math.sqrt((xx - cx) * (xx - cx) + (yy - cy) * (yy - cy));
+      if (d >= lo && d <= hi) setPixel(xx, yy);
+    }
+  }
+}
+
+/* ---- text with metrics-width stretching ----
+ * Per font we measure the browser font's natural average advance over a
+ * representative sample, then horizontally scale by avgCharWidth/natural so
+ * the drawn run's pixel width equals textWidth(font, str) exactly. This makes
+ * truncation, alignment and bar spans verifiable against the layout math.  */
+const fontScaler = {};
+function computeFontScaler(fontId) {
+  const f = BROWSER_FONTS[fontId];
+  const c = document.createElement("canvas");
+  const g = c.getContext("2d");
+  g.font = f.px + "px " + f.family;
+  const sample = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const natural = g.measureText(sample).width / sample.length;
+  fontScaler[fontId] = FONT_METRICS[fontId].avgCharWidth / natural;
+}
+
+const tempCv = document.createElement("canvas");
+const tempG = tempCv.getContext("2d", { willReadFrequently: true });
+
+// Draw str with glyph shapes from the browser font; x,y = top-left (integer).
+// align: 'left' at x | 'center' about x | 'right' ending at x.
+function drawText(fontId, x, y, str, opts) {
+  if (!str) return;
+  opts = opts || {};
+  x = Math.round(x); y = Math.round(y);
+  const w = textWidth(fontId, str);
+  let dx = x;
+  if (opts.align === "center") dx = x - Math.floor(w / 2);
+  else if (opts.align === "right") dx = x - w;
+  const ascender = FONT_METRICS[fontId].lineHeight;
+  const bw = w + 6, bh = ascender + 4;
+  tempCv.width = Math.max(1, bw);
+  tempCv.height = Math.max(1, bh);
+  tempG.clearRect(0, 0, bw, bh);
+  const scale = fontScaler[fontId];
+  tempG.setTransform(scale, 0, 0, 1, 0, 0);
+  tempG.fillStyle = "#000";
+  tempG.font = (opts.bold ? "bold " : "") + BROWSER_FONTS[fontId].px + "px " + BROWSER_FONTS[fontId].family;
+  tempG.textBaseline = "top";
+  tempG.textAlign = "left";
+  tempG.fillText(str, 0, 0);
+  tempG.setTransform(1, 0, 0, 1, 0, 0);
+  const d = tempG.getImageData(0, 0, tempCv.width, tempCv.height).data;
+  for (let py = 0; py < bh; py++) {
+    const yy = y + py; if (yy < 0 || yy >= pageH) continue;
+    for (let px = 0; px < bw; px++) {
+      const i = (py * bw + px) * 4;
+      if (d[i + 3] > 128) {
+        const luma = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        if (luma < 160) setPixel(dx + px, yy);
+      }
+    }
+  }
+}
+const drawCenteredText = (fontId, y, str, bold) => drawText(fontId, pageW / 2, y, str, { align: "center", bold: !!bold });
+const drawTextRight = (fontId, rightX, y, str) => drawText(fontId, rightX, y, str, { align: "right" });
+
+/* =====================================================================
+ * Button hints — BaseTheme::drawButtonHints (BaseTheme.cpp:187-218).
+ * ===================================================================== */
+const X4_BTN_POS = [25, 130, 245, 350];
+const X3_BTN_POS = [38, 154, 268, 384];
+function drawButtonHints(btn1, btn2, btn3, btn4) {
+  const positions = device === "x3" ? X3_BTN_POS : X4_BTN_POS;
+  const labels = [btn1, btn2, btn3, btn4];
+  const bw = 106, bh = METRICS.buttonHintsHeight;
+  const btnY = METRICS.buttonHintsHeight;                 // distance from bottom
+  const textYOffset = 7;
+  for (let i = 0; i < 4; i++) {
+    const lab = labels[i];
+    if (!lab) continue;
+    const x = positions[i];
+    const top = pageH - btnY;
+    fillRect(x, top, bw, bh);                             // white fill
+    drawRect(x, top, bw, bh, 1);                          // black outline
+    const tw = textWidth(UI_10, lab);
+    drawText(UI_10, x + Math.round((bw - 1 - tw) / 2), top + textYOffset, lab);
+  }
+}
+
+/* =====================================================================
+ * Liveness dial — 24×24 far-right header corner. 12 discrete 30° steps,
+ * precomputed {dx,dy} table (no runtime trig). Ring radius 10, 1px; hand
+ * 2px at radius 8. Spinner advances at 1 Hz in FETCHING/SHOWING/ERROR.
+ * ===================================================================== */
+// Hand tip offsets from center for radius 8, 30° steps starting at 12 o'clock.
+const SPINNER_HAND = [
+  [0, -8], [4, -7], [7, -4], [8, 0], [7, 4], [4, 7],
+  [0, 8], [-4, 7], [-7, 4], [-8, 0], [-7, -4], [-4, -7],
+];
+function drawLivenessDial(frame) {
+  const size = 24;
+  const x = pageW - METRICS.contentSidePadding - size;
+  const centerY = METRICS.topPadding + Math.floor(METRICS.headerHeight / 2); // 27 on X4/X3
+  const cx = x + size / 2, cy = centerY;
+  // Each render() redraws from a freshly cleared (paper-white) buffer, so the
+  // firmware's anti-ghost "erase previous hand in white" step is a no-op here.
+  drawCircle(cx, cy, 10);
+  const [dx, dy] = SPINNER_HAND[frame % 12];
+  drawLine(cx, cy, cx + dx, cy + dy, 2);
+}
+
+/* =====================================================================
+ * Header status bar — title left (UI_12 BOLD), updated right (SMALL),
+ * battery, liveness dial far-right. Rendered explicitly, NOT via
+ * GUI.drawHeader (spec §2). y band = topPadding .. +headerHeight.
+ * ===================================================================== */
+function drawHeader(title, updated, showDial) {
+  const bandTop = METRICS.topPadding;
+  const bandH = METRICS.headerHeight;
+  const textTop = bandTop + Math.floor((bandH - lineH(UI_12)) / 2);   // vertically center title
+
+  const updatedPresent = !!(updated && updated.length > 0);
+  const updatedZone = updatedPresent ? textWidth(SMALL, updated) : 0;
+  const dialSize = 24, gap = 8;
+  // Battery slot left of updated — simulator decision (spec §2: battery may
+  // move left of the dial for the monitor header). Reserved only when updated
+  // is shown, so a title-only header keeps the full spec titleZone.
+  const batterySlot = updatedPresent ? (14 + 6) : 0;
+  const titleZone = pageW - 2 * METRICS.contentSidePadding - updatedZone - dialSize - 2 * gap - batterySlot;
+
+  const titleStr = truncatedText(UI_12, title || "", titleZone);
+  drawText(UI_12, METRICS.contentSidePadding, textTop, titleStr, { bold: true });
+
+  if (updatedPresent) {
+    const updatedX = pageW - METRICS.contentSidePadding - dialSize - gap - updatedZone; // left edge
+    drawText(SMALL, updatedX, textTop + Math.round((lineH(UI_12) - lineH(SMALL)) / 2), updated);
+    // Small battery icon just left of the updated text.
+    const bx = updatedX - 6 - 14;
+    const by = textTop + Math.round((lineH(UI_12) - 6) / 2);
+    drawRect(bx, by, 12, 6, 1);
+    fillRect(bx + 12, by + 2, 2, 2);
+    fillRect(bx + 1, by + 1, Math.round(12 * 0.6), 4);   // ~60% charge
+  }
+
+  if (showDial) drawLivenessDial(spinnerFrame);
+}
+
+/* =====================================================================
+ * Dashboard parse — mirrors the schema (spec §1) with firmware caps:
+ * sections ≤6, rows ≤12, alerts ≤4, label ≤24, value ≤16, text ≤64,
+ * glyphs ≤32, updated/title ≤32. Unknown type → kv.
+ * ===================================================================== */
+function parseDashboard(jsonText) {
+  let obj;
+  try { obj = JSON.parse(jsonText); }
+  catch (e) { throw new Error("JSON parse error: " + e.message); }
+
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const strOf = (v, cap) => {
+    if (v === undefined || v === null) return "";
+    return String(v).slice(0, cap);
+  };
+  const normAlign = (a) => (a === "center" || a === "right" ? a : "left");
+  const normSize = (s) => (Number.isInteger(s) ? clamp(s, 0, 3) : -1);   // -1 = inherit ladder
+
+  function parseBar(b, rowType) {
+    if (b === undefined || b === null || b === false) return null;
+    if (typeof b === "number") return { value: clamp(Math.round(b), 0, 100), segments: 1, width: 1.0, align: "left" };
+    if (typeof b === "object") {
+      return {
+        value: clamp(Math.round(b.value || 0), 0, 100),
+        segments: clamp(Math.round(b.segments || 1), 1, 24),
+        width: clamp(parseFloat(b.width) || 1.0, 0.1, 1.0),
+        align: normAlign(b.align),
+      };
+    }
+    return null;
+  }
+
+  function parseRow(r) {
+    if (!r || typeof r !== "object") r = {};
+    const type = typeof r.type === "string" ? r.type : "kv";
+    const base = {
+      type: ["kv", "text", "bar", "spacer", "divider", "glyphs"].indexOf(type) >= 0 ? type : "kv",
+      align: normAlign(r.align),
+      bold: !!r.bold,
+      size: normSize(r.size),
+    };
+    switch (base.type) {
+      case "text":
+        return Object.assign(base, { text: strOf(r.text, 64) });
+      case "spacer":
+        return Object.assign(base, { height: clamp(Math.round(r.height || 10), 2, 60) });
+      case "divider":
+        return Object.assign(base, { inset: 0, lineWidth: 1, label: "" });
+      case "glyphs": {
+        const g = Array.isArray(r.glyphs) ? r.glyphs.slice(0, 32) : [];
+        return Object.assign(base, { label: strOf(r.label, 24), glyphs: g.map((c) => String(c)[0] || " ") });
+      }
+      default: {
+        const bar = parseBar(r.bar, base.type);
+        return Object.assign(base, {
+          label: strOf(r.label, 24),
+          value: strOf(r.value, 16),
+          bar,
+          alert: !!r.alert,
+        });
+      }
+    }
+  }
+
+  const title = strOf(obj.title, 32);
+  const updated = strOf(obj.updated, 32);
+  const alerts = (Array.isArray(obj.alerts) ? obj.alerts : []).slice(0, 4).map((a) => strOf(a, 48));
+  const sections = (Array.isArray(obj.sections) ? obj.sections : []).slice(0, 6).map((s) => ({
+    heading: strOf(s && s.heading, 24),
+    rows: (Array.isArray(s && s.rows) ? s.rows : []).slice(0, 12).map(parseRow),
+  }));
+  return { title, updated, sections, alerts };
+}
+
+/* =====================================================================
+ * Entry list for the per-entry scroll model (spec §2). One entry per
+ * heading / row / alert, each with its own height.
+ * ===================================================================== */
+function effectiveFont(row) { return row.size >= 0 ? row.size : globalLadder; }
+
+function buildEntries(dash) {
+  const entries = [];
+  const contentWidth = pageW - 2 * METRICS.contentSidePadding;
+  const rowFont = LADDER_FONTS[globalLadder];
+
+  for (const sec of dash.sections) {
+    if (sec.heading) entries.push({ kind: "heading", text: sec.heading, font: rowFont, bold: true });
+    for (const row of sec.rows) {
+      const f = effectiveFont(row);
+      switch (row.type) {
+        case "text":
+          entries.push({ kind: "text", row, font: f, lines: wrappedText(f, row.text, contentWidth, 2) });
+          break;
+        case "spacer":
+          entries.push({ kind: "spacer", row });
+          break;
+        case "divider":
+          entries.push({ kind: "divider", row });
+          break;
+        case "glyphs":
+          entries.push({ kind: "glyphs", row, font: f });
+          break;
+        default:
+          entries.push({ kind: "row", row, font: f });
+      }
+    }
+  }
+  if (dash.alerts.length > 0) {
+    entries.push({ kind: "heading", text: "Alerts", font: rowFont, bold: true });
+    for (const a of dash.alerts) entries.push({ kind: "alert", text: a, font: rowFont });
+  }
+  return entries;
+}
+
+function entryHeight(e) {
+  switch (e.kind) {
+    case "spacer": return e.row.height;
+    case "divider": return e.row.label ? Math.max(12, smallLineH()) : 12;
+    case "glyphs": return 20;
+    case "text": return e.lines.length * lineH(e.font);
+    default: return lineH(e.font);   // heading / row / alert
+  }
+}
+
+/* =====================================================================
+ * Row rendering (spec §2). Draws a single entry at y; returns nothing.
+ * ===================================================================== */
+function drawGlyphCell(gx, gy, ch) {
+  const S = 16;
+  const cx = gx + S / 2, cy = gy + S / 2;
+  switch (ch) {
+    case "#": fillRect(gx, gy, S, S); break;
+    case "o": drawRect(gx, gy, S, S, 1); break;
+    case ".": drawCircle(cx, cy, 7); break;
+    case "+":
+      drawLine(gx + 2, cy, gx + S - 2, cy, 2);
+      drawLine(cx, gy + 2, cx, gy + S - 2, 2);
+      break;
+    case "x":
+      drawLine(gx + 2, gy + 2, gx + S - 2, gy + S - 2, 2);
+      drawLine(gx + S - 2, gy + 2, gx + 2, gy + S - 2, 2);
+      break;
+    case "!": {  // filled triangle pointing down
+      const tri = [[cx, gy + S - 2], [gx + 2, gy + 3], [gx + S - 2, gy + 3]];
+      fillTriangle(tri);
+      break;
+    }
+    case "^": {  // up triangle
+      const tri = [[cx, gy + 3], [gx + 2, gy + S - 3], [gx + S - 2, gy + S - 3]];
+      fillTriangle(tri);
+      break;
+    }
+    case "v": {  // down triangle
+      const tri = [[cx, gy + S - 3], [gx + 2, gy + 3], [gx + S - 2, gy + 3]];
+      fillTriangle(tri);
+      break;
+    }
+    case " ":
+      break;
+    default:
+      drawText(SMALL, gx, gy + 2, ch);   // other ASCII → SMALL text glyph
+  }
+}
+// Scanline triangle fill (integer, 1-bit).
+function fillTriangle(pts) {
+  let yMin = Infinity, yMax = -Infinity;
+  for (const p of pts) { if (p[1] < yMin) yMin = p[1]; if (p[1] > yMax) yMax = p[1]; }
+  yMin = Math.floor(yMin); yMax = Math.ceil(yMax);
+  const edge = (ax, ay, bx, by, yy) => {
+    if (ay === by) return ax;
+    return ax + ((yy - ay) * (bx - ax)) / (by - ay);
+  };
+  for (let yy = yMin; yy <= yMax; yy++) {
+    let xs = [];
+    for (let i = 0; i < 3; i++) {
+      const p1 = pts[i], p2 = pts[(i + 1) % 3];
+      const lo = Math.min(p1[1], p2[1]), hi = Math.max(p1[1], p2[1]);
+      if (yy >= lo && yy <= hi && p1[1] !== p2[1]) xs.push(edge(p1[0], p1[1], p2[0], p2[1], yy));
+    }
+    if (xs.length < 2) continue;
+    const a = Math.round(Math.min(...xs)), b = Math.round(Math.max(...xs));
+    for (let xx = a; xx <= b; xx++) setPixel(xx, yy);
+  }
+}
+
+function drawKvRow(row, font, y, x, labelWidth, valueWidth, labelStr, valueStr, alertMarker) {
+  const contentSide = METRICS.contentSidePadding;
+  const rowH = lineH(font);
+  if (alertMarker) {
+    const my = y + Math.floor((rowH - 6) / 2);
+    fillRect(x, my, 6, 6);
+    drawText(font, x + 8, y, labelStr, { bold: true });
+  } else {
+    drawText(font, x, y, labelStr, { bold: row.bold });
+  }
+  const vx = x + (alertMarker ? 8 : 0) + labelWidth + 16;
+  drawText(font, vx, y, valueStr);
+}
+function drawBar(row, font, y, barX, barSpan) {
+  const rowH = lineH(font);
+  let barH = rowH - 12; if (barH < 2) barH = 2;
+  const barY = y + Math.floor((rowH - barH) / 2);
+  const b = row.bar;
+  // bar.width scales the span, bar.align places it within the gap.
+  let effX = barX, effSpan = barSpan;
+  if (b.width < 1.0) {
+    effSpan = Math.round(barSpan * b.width);
+    if (b.align === "center") effX = barX + Math.round((barSpan - effSpan) / 2);
+    else if (b.align === "right") effX = barX + (barSpan - effSpan);
+  }
+  drawRect(effX, barY, effSpan, barH, 1);
+  if (b.segments > 1) {
+    // Cells with 2px gaps; filled cells = round(segments * value/100).
+    const cellGap = 2;
+    const totalGap = (b.segments - 1) * cellGap;
+    const cellW = Math.max(1, Math.floor((effSpan - totalGap) / b.segments));
+    const filled = Math.round(b.segments * b.value / 100);
+    for (let s = 0; s < b.segments; s++) {
+      const cx = effX + s * (cellW + cellGap);
+      if (cx + cellW > effX + effSpan) break;
+      if (s < filled) fillRect(cx, barY, cellW, barH);
+      else drawRect(cx, barY, cellW, barH, 1);
+    }
+  } else {
+    // FLUSH fill — barSpan * value/100, no (barSpan-4)/+2 inset (spec §2).
+    const fillW = Math.round(effSpan * b.value / 100);
+    if (fillW > 0) fillRect(effX, barY, fillW, barH);
+  }
+}
+
+function renderEntry(e, y) {
+  const contentSide = METRICS.contentSidePadding;
+  const contentWidth = pageW - 2 * contentSide;
+  const font = e.font;
+
+  switch (e.kind) {
+    case "heading":
+      drawText(font, contentSide, y, e.text, { bold: true });
+      break;
+
+    case "row": {
+      const r = e.row;
+      const cols = computeRowColumns(contentWidth, !!r.bar);
+      const labelStr = truncatedText(font, r.label, cols.labelColMax);
+      const labelWidth = textWidth(font, labelStr);
+      let valueStr = r.value;
+      let valueWidth = textWidth(font, valueStr);
+      if (valueWidth > cols.valueColMax) { valueStr = truncatedText(font, valueStr, cols.valueColMax); valueWidth = textWidth(font, valueStr); }
+
+      if (r.bar) {
+        const labelExtra = r.alert ? 8 : 0;   // 6×6 marker prefix shifts the label block
+        const span = computeBarSpan(contentSide, pageW, labelWidth + labelExtra, valueWidth, BAR_GAP);
+        const barX = contentSide + labelWidth + labelExtra + BAR_GAP;   // == span.barX
+        if (span.barSpan >= 24) {
+          // kv with bar: label left, value right, bar between.
+          if (r.alert) {
+            const my = y + Math.floor((lineH(font) - 6) / 2);
+            fillRect(contentSide, my, 6, 6);
+            drawText(font, contentSide + 8, y, labelStr, { bold: true });
+          } else {
+            drawText(font, contentSide, y, labelStr, { bold: r.bold });
+          }
+          drawTextRight(font, pageW - contentSide, y, valueStr);
+          drawBar(r, font, y, span.barX, span.barSpan);
+        } else {
+          // 24 px floor → bar-less kv row honoring row align (spec §2).
+          const blockWidth = (labelWidth + labelExtra) + 16 + valueWidth;
+          let bx = contentSide;
+          if (r.align === "center") bx = Math.round((pageW - blockWidth) / 2);
+          else if (r.align === "right") bx = pageW - contentSide - blockWidth;
+          drawKvRow(r, font, y, bx, labelWidth, valueWidth, labelStr, valueStr, r.alert);
+        }
+      } else {
+        // kv without bar: align left → label 20, value 20+labelWidth+16; center → block
+        // centered; right → block right-aligned at pageW-20. (Kills the empty middle.)
+        const blockWidth = labelWidth + 16 + valueWidth;
+        let bx = contentSide;
+        if (r.align === "center") bx = Math.round((pageW - blockWidth) / 2);
+        else if (r.align === "right") bx = pageW - contentSide - blockWidth;
+        drawKvRow(r, font, y, bx, labelWidth, valueWidth, labelStr, valueStr, r.alert);
+      }
+      break;
+    }
+
+    case "alert": {
+      const cols = computeRowColumns(contentWidth, false);
+      const labelStr = truncatedText(font, e.text, cols.labelColMax);
+      const my = y + Math.floor((lineH(font) - 6) / 2);
+      fillRect(contentSide, my, 6, 6);                       // 6×6 filled-square marker prefix
+      drawText(font, contentSide + 8, y, labelStr, { bold: true });
+      break;
+    }
+
+    case "text": {
+      for (let li = 0; li < e.lines.length; li++) {
+        const align = e.row.align;
+        const x = align === "center" ? pageW / 2 : align === "right" ? pageW - contentSide : contentSide;
+        drawText(font, x, y + li * lineH(font), e.lines[li],
+                 { align: align === "left" ? undefined : align, bold: e.row.bold });
+      }
+      break;
+    }
+
+    case "spacer":
+      break;
+
+    case "divider": {
+      const r = e.row;
+      const bandH = r.label ? Math.max(12, smallLineH()) : 12;
+      if (r.label) {
+        drawCenteredText(SMALL, y, r.label);
+        const ruleY = y + bandH - 4;
+        fillRect(r.inset, ruleY, pageW - 2 * r.inset, r.lineWidth);
+      } else {
+        const ruleY = y + Math.floor(bandH / 2);
+        fillRect(r.inset, ruleY, pageW - 2 * r.inset, r.lineWidth);
+      }
+      break;
+    }
+
+    case "glyphs": {
+      const cells = e.row.glyphs;
+      const cellW = 16, cellGap = 4;
+      const cellsW = cells.length * cellW + (cells.length - 1) * cellGap;
+      const labelW = textWidth(font, e.row.label);
+      const totalW = (e.row.label ? labelW + 10 : 0) + cellsW;
+      let bx = contentSide;
+      if (e.row.align === "center") bx = Math.round((pageW - totalW) / 2);
+      else if (e.row.align === "right") bx = pageW - contentSide - totalW;
+      let cx = bx;
+      if (e.row.label) { drawText(font, cx, y, e.row.label); cx += labelW + 10; }
+      for (const ch of cells) { drawGlyphCell(cx, y, ch); cx += cellW + cellGap; }
+      break;
+    }
+  }
+}
+
+/* =====================================================================
+ * Render dispatch — mirrors HttpMonitorActivity's four render*() paths.
+ * ===================================================================== */
+function render() {
+  clearBuffer();
+
+  if (state === "no-config") {
+    renderNoConfig();
+  } else if (state === "fetching") {
+    renderFetching();
+  } else if (state === "error") {
+    renderError();
+  } else {
+    renderShowing();
+  }
+
+  if (hover && crosshairOn) {
+    drawLine(0, hover.y, pageW - 1, hover.y, 1);
+    drawLine(hover.x, 0, hover.x, pageH - 1, 1);
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function renderNoConfig() {
+  // Header: title only, no updated, no dial (spinner animates in FETCHING/SHOWING/ERROR only).
+  drawHeader(configTitle, "", false);
+
+  const lineH10 = lineH(UI_10);
+  const small = smallLineH();                       // getLineHeight(SMALL)+4 = 27
+  const maxTextWidth = pageW - 2 * METRICS.contentSidePadding;
+  let y = METRICS.topPadding + METRICS.headerHeight + METRICS.verticalSpacing * 3;   // 80
+
+  drawCenteredText(UI_10, y, "No config found", true);
+  y += lineH10 + 10;
+  drawCenteredText(SMALL, y, "Create this file on the SD card:");
+  y += small;
+  drawCenteredText(SMALL, y, CONFIG_PATH);
+  y += small + 12;
+  drawCenteredText(SMALL, y, "Required key:");
+  y += small;
+  drawCenteredText(SMALL, y, "url = http://host:port/status.json");
+  y += small + 12;
+
+  if (configError) {
+    drawCenteredText(SMALL, y, truncatedText(SMALL, configError, maxTextWidth));
+  }
+  drawButtonHints("Back", "", "", "");
+}
+
+function renderFetching() {
+  drawHeader(configTitle, parsed ? parsed.updated : "", true);
+  drawCenteredText(UI_10, Math.floor(pageH / 2), "Fetching...");
+  // NO button hints.
+}
+
+function renderError() {
+  drawHeader(configTitle, parsed ? parsed.updated : "", true);
+
+  const lineH10 = lineH(UI_10);
+  const smallLine = FONT_METRICS[SMALL].lineHeight + 2;   // getLineHeight(SMALL)+2 = 25
+  const maxTextWidth = pageW - 2 * METRICS.contentSidePadding;
+  let y = METRICS.topPadding + METRICS.headerHeight + METRICS.verticalSpacing * 3;
+
+  const statusBuf = httpCode > 0 ? "HTTP " + httpCode : "Connection failed";
+  drawCenteredText(UI_10, y, statusBuf, true);
+  y += lineH10 + 6;
+
+  const errLines = wrappedText(SMALL, fetchError, maxTextWidth, 3);
+  for (const ln of errLines) { drawCenteredText(SMALL, y, ln); y += smallLine; }
+
+  drawButtonHints("Back", "Retry", "", "");
+}
+
+function renderShowing() {
+  const dash = parsed;
+  const title = dash.title || configTitle;
+  drawHeader(title, dash.updated, true);
+
+  const contentBottom = pageH - METRICS.buttonHintsHeight - METRICS.verticalSpacing;
+  const contentWidth = pageW - 2 * METRICS.contentSidePadding;
+  const unreservedContentTop = METRICS.topPadding + METRICS.headerHeight + METRICS.verticalSpacing;
+
+  const entries = buildEntries(dash);
+  const heights = entries.map(entryHeight);
+  const entryCount = entries.length;
+
+  // Reserve one SMALL line for the scroll indicator only when scrolling is needed.
+  const unreservedVisible = computeVisibleEntries(heights, unreservedContentTop, contentBottom);
+  const needsScroll = entryCount - unreservedVisible > 0;
+  const small = smallLineH();
+  const contentTop = needsScroll ? unreservedContentTop + small : unreservedContentTop;
+
+  const visibleEntries = computeVisibleEntries(heights, contentTop, contentBottom);
+  const maxScroll = Math.max(0, entryCount - visibleEntries);
+  scrollOffset = clampScrollOffset(scrollOffset, maxScroll);
+
+  // Per-entry scroll: entry i at contentTop + Σ heights[scrollOffset..i-1].
+  let y = contentTop;
+  for (let i = scrollOffset; i < entryCount; i++) {
+    const eh = heights[i];
+    if (y + eh > contentBottom) break;
+    renderEntry(entries[i], y);
+    y += eh;
+  }
+
+  if (entryCount === 0) {
+    drawCenteredText(UI_10, Math.floor((contentTop + contentBottom) / 2), "No data");
+  }
+
+  if (needsScroll) {
+    const pageSize = Math.max(1, visibleEntries);
+    const totalPages = computeTotalPages(entryCount, pageSize);
+    const curPage = Math.floor(scrollOffset / pageSize) + 1;
+    const s = curPage + "/" + totalPages;
+    drawText(SMALL, pageW - METRICS.contentSidePadding - textWidth(SMALL, s), unreservedContentTop, s);
+  }
+
+  drawButtonHints("Back", "Refresh", "<", ">");
+}
+
+/* =====================================================================
+ * Sample payloads (spec §A.4).
+ * ===================================================================== */
+const SAMPLES = {
+  simple: [
+    '{',
+    '  "title": "Wing Temperature",',
+    '  "updated": "12:04:33",',
+    '  "sections": [',
+    '    { "heading": "Engines", "rows": [',
+    '      { "label": "Left",    "value": "82C", "bar": 40 },',
+    '      { "label": "Right",   "value": "88C", "bar": 60 },',
+    '      { "label": "Nacelle", "value": "41C", "bar": 10, "alert": true }',
+    '    ]},',
+    '    { "heading": "Fuel", "rows": [',
+    '      { "label": "Tank 1", "value": "62%", "bar": 62 },',
+    '      { "label": "Tank 2", "value": "38%", "bar": 38 }',
+    '    ]}',
+    '  ],',
+    '  "alerts": ["Fuel tank 2 low"]',
+    '}',
+  ].join("\n"),
+
+  dense: [
+    '{',
+    '  "title": "Server Farm",',
+    '  "updated": "2026-08-17 09:41:02",',
+    '  "sections": [',
+    '    { "heading": "Overview", "rows": [',
+    '      { "type": "kv", "label": "Hostname", "value": "x4-01" },',
+    '      { "type": "kv", "label": "Uptime", "value": "13d 4h", "align": "center" },',
+    '      { "type": "bar", "label": "CPU", "value": "73%", "bar": { "value": 73, "segments": 12, "width": 1.0, "align": "left" } },',
+    '      { "type": "bar", "label": "RAM", "value": "51%", "bar": { "value": 51, "segments": 8, "width": 0.8, "align": "center" } },',
+    '      { "type": "text", "text": "Peak load crossed 90% at 03:12 UTC.", "align": "left" },',
+    '      { "type": "divider", "label": "Network" },',
+    '      { "type": "kv", "label": "In",  "value": "412 Mb/s", "bar": { "value": 41 } },',
+    '      { "type": "kv", "label": "Out", "value": "188 Mb/s", "bar": { "value": 19 } },',
+    '      { "type": "spacer", "height": 20 },',
+    '      { "type": "glyphs", "label": "Status", "align": "left", "glyphs": ["#", "o", ".", "+", "x", "!", "^", "v", " ", "A"] }',
+    '    ]}',
+    '  ],',
+    '  "alerts": ["CPU high on x4-01"]',
+    '}',
+  ].join("\n"),
+
+  compact: [
+    '{',
+    '  "title": "Mini",',
+    '  "updated": "08:00",',
+    '  "sections": [',
+    '    { "heading": "Sensors", "rows": [',
+    '      { "type": "kv", "label": "Temp", "value": "21C", "size": 0 },',
+    '      { "type": "kv", "label": "Hum",  "value": "55%", "size": 0 },',
+    '      { "type": "bar", "label": "Bat", "value": "80%", "size": 0, "bar": { "value": 80, "segments": 5 } }',
+    '    ]}',
+    '  ]',
+    '}',
+  ].join("\n"),
+};
+
+/* =====================================================================
+ * Controls wiring.
+ * ===================================================================== */
+const $ = (id) => document.getElementById(id);
+
+function refreshMetrics() {
+  for (const f in FONT_METRICS) computeFontScaler(+f);
+}
+function applyDevice() {
+  pageW = device === "x3" ? 528 : 480;
+  pageH = device === "x3" ? 792 : 800;
+  resizeBuffer(pageW, pageH);
+}
+
+function readJson() {
+  const txt = $("json").value;
+  const bytes = new TextEncoder().encode(txt).length;
+  const ro = $("byte-readout");
+  ro.textContent = bytes.toLocaleString() + " / " + MAX_BODY_BYTES + " bytes" + (bytes > MAX_BODY_BYTES ? "  (OVER CAP)" : "");
+  ro.classList.toggle("over", bytes > MAX_BODY_BYTES);
+  try {
+    parsed = parseDashboard(txt);
+    parseError = null;
+    $("json-err").style.display = "none";
+  } catch (e) {
+    parsed = null;
+    parseError = e.message;
+    const el = $("json-err");
+    el.textContent = parseError;
+    el.style.display = "block";
+  }
+  updateScrollControls();
+  render();
+}
+
+function updateScrollControls() {
+  const entries = parsed ? buildEntries(parsed) : [];
+  const heights = entries.map(entryHeight);
+  const contentBottom = pageH - METRICS.buttonHintsHeight - METRICS.verticalSpacing;
+  const unreserved = METRICS.topPadding + METRICS.headerHeight + METRICS.verticalSpacing;
+  const visible = computeVisibleEntries(heights, unreserved, contentBottom);
+  const maxScroll = Math.max(0, entries.length - visible);
+  const slider = $("scroll-slider");
+  slider.max = String(maxScroll);
+  slider.value = String(clampScrollOffset(scrollOffset, maxScroll));
+  $("scroll-up").disabled = scrollOffset <= 0;
+  $("scroll-down").disabled = scrollOffset >= maxScroll;
+  $("page-ind").textContent = maxScroll === 0 ? "1/1" : (Math.floor(scrollOffset / Math.max(1, visible)) + 1) + "/" + computeTotalPages(entries.length, Math.max(1, visible));
+}
+
+function renderAll() { readJson(); }
+
+// ---- device toggle ----
+$("device").addEventListener("change", (e) => {
+  device = e.target.value;
+  applyDevice();
+  renderAll();
+});
+
+// ---- font ladder ----
+$("ladder").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-idx]");
+  if (!b) return;
+  globalLadder = +b.dataset.idx;
+  document.querySelectorAll("#ladder button").forEach((x) => x.classList.toggle("active", +x.dataset.idx === globalLadder));
+  scrollOffset = 0;
+  renderAll();
+});
+
+// ---- state pills ----
+$("state-pills").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-state]");
+  if (!b) return;
+  state = b.dataset.state;
+  document.querySelectorAll("#state-pills button").forEach((x) => x.classList.toggle("active", x.dataset.state === state));
+  renderAll();
+});
+
+// ---- config / error fields ----
+$("config-title").addEventListener("input", (e) => { configTitle = e.target.value; render(); });
+$("http-code").addEventListener("input", (e) => { httpCode = parseInt(e.target.value, 10) || 0; render(); });
+$("fetch-error").addEventListener("input", (e) => { fetchError = e.target.value; render(); });
+$("config-error").addEventListener("input", (e) => { configError = e.target.value; render(); });
+
+// ---- JSON textarea (debounced) ----
+let debounceTimer = null;
+$("json").addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(readJson, 300);
+});
+
+// ---- samples ----
+document.querySelectorAll("button[data-sample]").forEach((b) => {
+  b.addEventListener("click", () => {
+    $("json").value = SAMPLES[b.dataset.sample];
+    readJson();
+  });
+});
+
+// ---- scroll ----
+$("scroll-up").addEventListener("click", () => { scrollOffset = Math.max(0, scrollOffset - 1); renderAll(); });
+$("scroll-down").addEventListener("click", () => { scrollOffset = scrollOffset + 1; renderAll(); });
+$("scroll-slider").addEventListener("input", (e) => { scrollOffset = +e.target.value; renderAll(); });
+
+// ---- spinner ----
+$("spinner-auto").addEventListener("change", (e) => { spinnerAuto = e.target.checked; });
+$("spinner-step").addEventListener("click", () => { spinnerFrame = (spinnerFrame + 1) % 12; render(); });
+setInterval(() => {
+  if (spinnerAuto && (state === "fetching" || state === "showing" || state === "error")) {
+    spinnerFrame = (spinnerFrame + 1) % 12;
+    render();
+  }
+}, 1000);
+
+// ---- crosshair hover ----
+$("crosshair-on").addEventListener("change", (e) => { crosshairOn = e.target.checked; render(); });
+function canvasPos(evt) {
+  const r = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / r.width;
+  const scaleY = canvas.height / r.height;
+  return { x: Math.round((evt.clientX - r.left) * scaleX), y: Math.round((evt.clientY - r.top) * scaleY) };
+}
+canvas.addEventListener("mousemove", (evt) => {
+  const p = canvasPos(evt);
+  hover = { x: Math.max(0, Math.min(pageW - 1, p.x)), y: Math.max(0, Math.min(pageH - 1, p.y)) };
+  $("xy-readout").textContent = hover.x + "," + hover.y;
+  render();
+});
+canvas.addEventListener("mouseleave", () => { hover = null; $("xy-readout").textContent = "x,y"; render(); });
+
+/* =====================================================================
+ * Boot.
+ * ===================================================================== */
+refreshMetrics();
+applyDevice();
+$("json").value = SAMPLES.dense;
+readJson();
+</script>
+</body>
+</html>

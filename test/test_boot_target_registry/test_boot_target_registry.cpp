@@ -18,6 +18,18 @@
 
 #include <unity.h>
 
+// BootTargetRegistry.h only forward-declares Activity, but the NATIVE_TEST stub of
+// make() returns std::unique_ptr<Activity>, whose destructor requires a complete
+// type. We define the minimal complete type here rather than pulling in the full
+// mock (test/mocks/Activity.h): that mock transitively includes GfxRenderer.h /
+// MappedInputManager.h whose names collide with Arduino-only libs that LDF then
+// drags into the native build (Bitmap.cpp -> FsFile, etc.). make() is never called
+// under native, so no Activity members are needed — only the type must be complete.
+class Activity {
+ public:
+  virtual ~Activity() = default;
+};
+
 #include "../../src/activities/BootTargetRegistry.h"
 #include "../../src/activities/BootTargetRegistry.cpp"
 
@@ -25,9 +37,9 @@ void test_count_matches_labels_size() {
   TEST_ASSERT_EQUAL(BootTargets::count(), BootTargets::labels().size());
 }
 
-void test_count_is_six() {
-  // 1 apps-menu sentinel + 5 curated apps.
-  TEST_ASSERT_EQUAL(6, BootTargets::count());
+void test_count_is_nine() {
+  // 1 apps-menu sentinel + 8 curated apps.
+  TEST_ASSERT_EQUAL(9, BootTargets::count());
 }
 
 void test_index_zero_is_apps_menu_sentinel() {
@@ -63,7 +75,7 @@ void tearDown() {}
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_count_matches_labels_size);
-  RUN_TEST(test_count_is_six);
+  RUN_TEST(test_count_is_nine);
   RUN_TEST(test_index_zero_is_apps_menu_sentinel);
   RUN_TEST(test_every_curated_index_has_a_factory);
   RUN_TEST(test_out_of_range_index_has_no_factory);

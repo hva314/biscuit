@@ -96,6 +96,24 @@ at the cost of a brief, more visible flash. Setting `full_refresh_every` to
 `0` disables these clean refreshes entirely (not recommended for long-running
 displays).
 
+### The liveness dial
+
+The dashboard header's top-right corner shows a small clock face — a ring with
+a second-hand that advances once a second. It is a quick "is the device still
+working" check at a glance: while the dashboard is on screen the hand keeps
+ticking, so a glance tells you the tool hasn't frozen. The hand is driven by
+the device's own clock, so it ticks even between polls; it is unrelated to the
+server's `updated` timestamp, which is drawn just to its left. (The hand runs
+only while the dashboard is actually showing — in the fetching or error states
+nothing about the screen changes, so there is nothing to animate and no
+second-by-second repaint.)
+
+Because the dashboard is redrawn every second to move the hand, ghosting is
+cleared more often than `full_refresh_every` alone would provide: while the
+dashboard is on screen the device does a clean refresh about once a minute, on
+top of the `full_refresh_every`-based ones — unless you've set
+`full_refresh_every` to `0`.
+
 ## Error states
 
 | Condition | What you'll see | What to check |

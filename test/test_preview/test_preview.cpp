@@ -16,7 +16,11 @@
 // ============================================================
 
 #include <unity.h>
+
+#include <algorithm>
+#include <cstring>
 #include <vector>
+
 #include "BitmapRenderer.h"
 
 // Pure layout arithmetic shared with the real HttpMonitorActivity::renderDashboard()
@@ -24,6 +28,9 @@
 // the device runs, not a hand-copy of it (drawing primitives still differ; the
 // mock draws with drawRect/fillRect the same way the real renderer now does).
 #include "../../src/activities/apps/HttpMonitorLayout.h"
+// The typed row schema (RowType/RowAlign/BarSpec) that the firmware renderDashboard
+// dispatches on — the preview mirrors that dispatch, so the enum values can't drift.
+#include "../../src/activities/apps/HttpMonitorSchema.h"
 
 // We use BitmapRenderer (a real pixel-drawing GfxRenderer) instead of the no-op mock
 static GfxRenderer renderer;
@@ -290,110 +297,521 @@ static void drawButtonHintsOn(GfxRenderer& r, const char* b1, const char* b2, co
   }
 }
 
-struct HttpMonitorPreviewRow { const char* label; const char* value; int bar; bool alert; };
+struct HttpMonitorPreviewRow {
+  const char* label = nullptr;
+  const char* value = nullptr;
+  int bar = -1;               // legacy int bar: 0..100, -1 = none
+  bool alert = false;         // 6x6 marker + BOLD (kv rows and alert lines)
+  // Extended fields mirroring the typed schema Row (HttpMonitorSchema.h). All
+  // defaulted so the legacy {label, value, bar, alert} aggregate init used by the
+  // older fixtures below keeps compiling unchanged.
+  const char* text = nullptr;   // `text` rows (wrap to <= 2 lines)
+  const char* glyphs = nullptr; // `glyphs` rows (concatenated glyph chars)
+  int type = 0;                 // HttpMonitorSchema::RowType (0 = KV)
+  int align = 0;                // HttpMonitorSchema::RowAlign (0 = LEFT)
+  bool bold = false;
+  int sizeIdx = 0xFF;           // HttpMonitorSchema::SIZE_INHERIT (ladder 0..3)
+  int spacerHeight = 10;        // `spacer` px
+  int dividerInset = 0;         // `divider` px in from each side
+  int dividerLineWidth = 1;     // `divider` rule thickness (1..2)
+  HttpMonitorSchema::BarSpec barObj;  // object-form bar; overrides `bar` when value >= 0
+};
+
 struct HttpMonitorPreviewSection { const char* heading; std::vector<HttpMonitorPreviewRow> rows; };
 
+// Row `type` values are HttpMonitorSchema::RowType — the dispatch switch below
+// casts row.type straight to that enum, so the preview can't drift from the
+// schema values the firmware dispatches on.
+
+// Maps a row `size` ladder index (0..3) to a font id, mirroring the firmware's
+// fontForSize(). The preview has no getFontMap(); index 3 (BOOKERLY_14) isn't in
+// the preview font set, so it falls back to UI_12 exactly as fontForSize() does
+// when a candidate is absent. SIZE_INHERIT -> UI_12 (preview dashboards don't
+// change the dashboard font size).
+static int previewFontForSize(int sizeIdx) {
+  switch (sizeIdx) {
+    case 0: return SMALL_FONT_ID;
+    case 1: return UI_10_FONT_ID;
+    case 2: return UI_12_FONT_ID;
+    case 3: return UI_12_FONT_ID;  // BOOKERLY_14 not registered in previews
+    default: return UI_12_FONT_ID; // SIZE_INHERIT
+  }
+}
+
+// Merge the legacy int `bar` into the bar object form — a legacy int bar IS a
+// BarSpec with defaults (1 segment, 100% width, LEFT); the object form wins when
+// present.
+static HttpMonitorSchema::BarSpec effectiveBar(const HttpMonitorPreviewRow& row) {
+  HttpMonitorSchema::BarSpec b = row.barObj;
+  if (b.value < 0 && row.bar >= 0) b.value = row.bar;
+  return b;
+}
+
+// ---- mock-adapted drawing primitives ----
+// The real renderer has drawArc / fillPolygon / drawLine(lineWidth, state); the
+// preview mock has none of those, so each is approximated with mock primitives
+// (scanlines / drawPixel circles). The mock draws 1-bit fills the same way the
+// real renderer does, so the geometry is faithful even if the rasterization
+// differs.
+
+// Filled disk via scanlines (the firmware's '.' glyph draws four quadrant arcs).
+// Same loop as drawPip() above but on the passed renderer.
+static void drawPipOn(GfxRenderer& r, int cx, int cy, int rad) {
+  for (int dy = -rad; dy <= rad; dy++) {
+    int dx = 0;
+    while ((dx + 1) * (dx + 1) + dy * dy <= rad * rad) dx++;
+    r.fillRect(cx - dx, cy + dy, dx * 2 + 1, 1, true);
+  }
+}
+
+// Filled up-triangle, apex (cx+8, cy), base (cx..cx+15, cy+15) — the firmware's
+// '!' glyph calls fillPolygon, which the mock lacks; fill row-by-row with a
+// linearly widening half-width.
+static void fillUpTriangle(GfxRenderer& r, int cx, int cy) {
+  for (int d = 0; d < 16; ++d) {
+    const int half = (d * 8 + 15) / 16;  // 0..8, rounding so the base hits both corners
+    int left = cx + 8 - half;
+    if (left < cx) left = cx;
+    int right = cx + 8 + half;
+    if (right > cx + 15) right = cx + 15;
+    r.fillRect(left, cy + d, right - left + 1, 1, true);
+  }
+}
+
+// Circle outline via the midpoint algorithm — the mock has no drawArc, so the
+// liveness dial's ring is a plain pixel circle here (the real renderer draws it
+// with four drawArc quadrant calls).
+static void drawCircleOutline(GfxRenderer& r, int ccx, int ccy, int radius) {
+  int x = radius;
+  int y = 0;
+  int err = 1 - radius;
+  while (x >= y) {
+    r.drawPixel(ccx + x, ccy + y, true);
+    r.drawPixel(ccx + y, ccy + x, true);
+    r.drawPixel(ccx - y, ccy + x, true);
+    r.drawPixel(ccx - x, ccy + y, true);
+    r.drawPixel(ccx - x, ccy - y, true);
+    r.drawPixel(ccx - y, ccy - x, true);
+    r.drawPixel(ccx + y, ccy - x, true);
+    r.drawPixel(ccx + x, ccy - y, true);
+    ++y;
+    if (err < 0) {
+      err += 2 * y + 1;
+    } else {
+      --x;
+      err += 2 * (y - x) + 1;
+    }
+  }
+}
+
+// The header's far-right 24x24 liveness-dial corner. Ring radius 10, hand length
+// 8. The firmware animates the hand from loop() at 1Hz; the preview is a single
+// frame, so the hand sits at 12 o'clock (step 0 of the 12-step table).
+static void drawLivenessDial(GfxRenderer& r, int dialX, int dialY) {
+  constexpr int CX = 12, CY = 12;  // center of the 24x24 box
+  constexpr int RING_R = 10;
+  constexpr int HAND_LEN = 8;
+  const int ccx = dialX + CX, ccy = dialY + CY;
+  drawCircleOutline(r, ccx, ccy, RING_R);
+  r.drawLine(ccx, ccy, ccx, ccy - HAND_LEN);
+}
+
+// ---- fixture-building helpers for the extended schema ----
+
+static HttpMonitorPreviewRow kvRow(const char* label, const char* value, int bar = -1, bool alert = false) {
+  HttpMonitorPreviewRow r;
+  r.label = label; r.value = value; r.bar = bar; r.alert = alert;
+  return r;
+}
+
+static HttpMonitorPreviewRow barObjRow(const char* label, const char* value, int barValue, int segments,
+                                       int widthPct, int align) {
+  HttpMonitorPreviewRow r;
+  r.label = label; r.value = value;
+  r.barObj.value = barValue;
+  r.barObj.segments = segments;
+  r.barObj.widthPct = widthPct;
+  r.barObj.align = static_cast<HttpMonitorSchema::RowAlign>(align);
+  return r;
+}
+
+static HttpMonitorPreviewRow textRow(const char* text, int align = 0, bool bold = false, int sizeIdx = 0xFF) {
+  HttpMonitorPreviewRow r;
+  r.type = static_cast<int>(HttpMonitorSchema::RowType::TEXT);
+  r.text = text; r.align = align; r.bold = bold; r.sizeIdx = sizeIdx;
+  return r;
+}
+
+static HttpMonitorPreviewRow spacerRow(int height) {
+  HttpMonitorPreviewRow r;
+  r.type = static_cast<int>(HttpMonitorSchema::RowType::SPACER);
+  r.spacerHeight = height;
+  return r;
+}
+
+static HttpMonitorPreviewRow dividerRow(const char* label, int inset, int lineWidth) {
+  HttpMonitorPreviewRow r;
+  r.type = static_cast<int>(HttpMonitorSchema::RowType::DIVIDER);
+  r.label = label; r.dividerInset = inset; r.dividerLineWidth = lineWidth;
+  return r;
+}
+
+static HttpMonitorPreviewRow glyphsRow(const char* glyphs, const char* label = nullptr, int align = 0) {
+  HttpMonitorPreviewRow r;
+  r.type = static_cast<int>(HttpMonitorSchema::RowType::GLYPHS);
+  r.glyphs = glyphs; r.label = label; r.align = align;
+  return r;
+}
+
 // Exercises the SAME pure layout math as HttpMonitorActivity::renderDashboard()
-// via HttpMonitorLayout.h — column allocation, bar span, and totalLines/
-// visibleLines/maxScroll are computed by the shared functions, not a hand-copy.
-// Only the drawing primitives are mock-specific (drawRect/fillRect either way,
-// matching what the real renderer now does since GUI.drawProgressBar was
-// dropped). Returns the clamped maxScroll so callers can drive a "scrolled to
-// bottom" preview and prove scrolling actually works.
+// via HttpMonitorLayout.h — column allocation, fractional-bar placement, per-entry
+// mixed heights, and maxScroll are computed by the shared functions, not a
+// hand-copy. Only the drawing primitives are mock-specific (drawRect/fillRect,
+// scanline approximations of drawArc/fillPolygon). The dispatch switch casts each
+// row's `type` to HttpMonitorSchema::RowType, so the preview can't drift from the
+// schema values the firmware dispatches on. Returns the clamped maxScroll so
+// callers can drive a "scrolled to bottom" preview and prove scrolling works.
 static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<HttpMonitorPreviewSection>& sections,
-                                              const char* title, int scrollOffset) {
+                                             const char* title, int scrollOffset, const char* updated = nullptr,
+                                             const std::vector<const char*>& alerts = {}) {
   const int pageWidth = r.getScreenWidth();
   const int pageHeight = r.getScreenHeight();
+  const int headerY = 5;  // metrics.topPadding
   const int headerH = 45;
   const int buttonHintsH = 40;
   const int verticalSpacing = 10;
   const int sidePadding = 20;
-  const int lineH = r.getLineHeight(UI_12_FONT_ID) + 6;
   const int contentBottom = pageHeight - buttonHintsH - verticalSpacing;
   const int contentWidth = pageWidth - 2 * sidePadding;
-  const int unreservedContentTop = headerH + verticalSpacing;
+  const int unreservedContentTop = headerY + headerH + verticalSpacing;
   const int BAR_GAP = 10;
+  const int rowFontGlobal = previewFontForSize(2 /* UI_12, the preview's dashboard font */);
+  const int rowLineHGlobal = r.getLineHeight(rowFontGlobal) + 6;
 
   r.clearScreen();
-  r.drawCenteredText(UI_12_FONT_ID, 12, title, true, 1);
-  r.drawLine(15, 42, pageWidth - 15, 42);
 
-  int headingCount = 0;
-  int rowCount = 0;
+  // ---- explicit header: title (left, BOLD) / updated (right) / liveness dial
+  // (far-right corner). NO rule line — the old drawHeader rule is gone.
+  const char* displayTitle = (title && title[0] != '\0') ? title : "Http Monitor";
+  const std::string updatedStr = updated ? updated : "";
+  const int updatedW = !updatedStr.empty() ? r.getTextWidth(SMALL_FONT_ID, updatedStr.c_str()) : 0;
+  constexpr int DIAL_SIZE = 24;
+  const int dialX = pageWidth - sidePadding - DIAL_SIZE;
+  const int updatedX = dialX - 8 - updatedW;
+  const int titleZone = pageWidth - 2 * sidePadding - updatedW - DIAL_SIZE - 2 * 8;
+  const int titleY = headerY + (headerH - r.getLineHeight(UI_12_FONT_ID)) / 2;
+  const std::string titleStr = r.truncatedText(UI_12_FONT_ID, displayTitle, titleZone, 1 /* BOLD */);
+  r.drawText(UI_12_FONT_ID, sidePadding, titleY, titleStr.c_str(), true, 1);
+  const int updatedY = headerY + (headerH - r.getLineHeight(SMALL_FONT_ID)) / 2;
+  if (!updatedStr.empty()) r.drawText(SMALL_FONT_ID, updatedX, updatedY, updatedStr.c_str());
+  const int dialY = headerY + (headerH - DIAL_SIZE) / 2;
+  drawLivenessDial(r, dialX, dialY);
+
+  // ---- per-entry heights + parallel entry list (headings, typed rows, alerts).
+  enum class EntryKind { HEADING, ROW, ALERT };
+  struct PreviewEntry {
+    EntryKind kind;
+    const char* text;
+    const HttpMonitorPreviewRow* row;
+  };
+  std::vector<int> entryHeights;
+  std::vector<PreviewEntry> entries;
+
   for (auto& section : sections) {
-    if (section.heading[0] != '\0') headingCount++;
-    rowCount += static_cast<int>(section.rows.size());
+    if (section.heading[0] != '\0') {
+      entryHeights.push_back(rowLineHGlobal);
+      entries.push_back({EntryKind::HEADING, section.heading, nullptr});
+    }
+    for (auto& row : section.rows) {
+      const int rowFont = previewFontForSize(row.sizeIdx);
+      const int rowLineH = r.getLineHeight(rowFont) + 6;
+      switch (static_cast<HttpMonitorSchema::RowType>(row.type)) {
+        case HttpMonitorSchema::RowType::SPACER:
+          entryHeights.push_back(HttpMonitorLayout::spacerEntryHeight(row.spacerHeight));
+          break;
+        case HttpMonitorSchema::RowType::DIVIDER:
+          entryHeights.push_back(HttpMonitorLayout::dividerEntryHeight());
+          break;
+        case HttpMonitorSchema::RowType::GLYPHS:
+          entryHeights.push_back(HttpMonitorLayout::glyphsEntryHeight());
+          break;
+        case HttpMonitorSchema::RowType::TEXT: {
+          // Alert text rows draw a 6x6 marker + indent (drawTextRow below), so
+          // they wrap at a narrower width; the height must match what is drawn.
+          const int markerPad = row.alert ? 10 : 0;
+          const auto lines =
+              r.wrappedText(rowFont, row.text ? row.text : "", contentWidth - markerPad, 2, row.bold ? 1 : 0);
+          entryHeights.push_back(HttpMonitorLayout::textEntryHeight(rowLineH, static_cast<int>(lines.size())));
+          break;
+        }
+        default:  // KV (also covers BAR — a bar is a kv row with a bar)
+          entryHeights.push_back(HttpMonitorLayout::kvEntryHeight(rowLineH));
+          break;
+      }
+      entries.push_back({EntryKind::ROW, nullptr, &row});
+    }
   }
-  const int totalLines = HttpMonitorLayout::computeTotalLines(headingCount, rowCount, 0);
+  if (!alerts.empty()) {
+    entryHeights.push_back(rowLineHGlobal);
+    entries.push_back({EntryKind::HEADING, "Alerts", nullptr});
+    for (const char* alert : alerts) {
+      entryHeights.push_back(rowLineHGlobal);
+      entries.push_back({EntryKind::ALERT, alert, nullptr});
+    }
+  }
+  const int entryCount = static_cast<int>(entryHeights.size());
 
   const auto unreservedScroll =
-      HttpMonitorLayout::computeScrollMetrics(totalLines, unreservedContentTop, contentBottom, lineH);
+      HttpMonitorLayout::computeScrollMetrics(entryHeights.data(), entryCount, unreservedContentTop, contentBottom);
   const bool needsScrollIndicator = unreservedScroll.maxScroll > 0;
   const int smallLineH = r.getLineHeight(SMALL_FONT_ID) + 4;
   const int contentTop = needsScrollIndicator ? (unreservedContentTop + smallLineH) : unreservedContentTop;
 
-  const auto scrollMetrics = HttpMonitorLayout::computeScrollMetrics(totalLines, contentTop, contentBottom, lineH);
-  const int visibleLines = scrollMetrics.visibleLines;
+  const auto scrollMetrics =
+      HttpMonitorLayout::computeScrollMetrics(entryHeights.data(), entryCount, contentTop, contentBottom);
+  const int visibleEntries = scrollMetrics.visibleEntries;
   const int maxScroll = scrollMetrics.maxScroll;
   scrollOffset = HttpMonitorLayout::clampScrollOffset(scrollOffset, maxScroll);
 
-  int lineIdx = 0;
-  int y = contentTop;
+  // ---- drawing lambdas (mock-adapted; geometry mirrors HttpMonitorActivity) ----
 
-  auto drawLine = [&](bool isHeading, const char* label, const char* value, int bar, bool alert) {
-    std::string labelStr, valueStr;
-    int labelWidth = 0, valueWidth = 0, barX = 0, barSpan = 0;
-
-    if (!isHeading) {
-      const auto cols = HttpMonitorLayout::computeRowColumns(contentWidth, bar >= 0);
-
-      labelStr = r.truncatedText(UI_12_FONT_ID, label, cols.labelColMax);
-      labelWidth = r.getTextWidth(UI_12_FONT_ID, labelStr.c_str());
-
-      valueWidth = r.getTextWidth(UI_12_FONT_ID, value);
-      valueStr = (valueWidth > cols.valueColMax) ? r.truncatedText(UI_12_FONT_ID, value, cols.valueColMax) : value;
-      valueWidth = r.getTextWidth(UI_12_FONT_ID, valueStr.c_str());
-
-      if (bar >= 0) {
-        const auto barSpanResult =
-            HttpMonitorLayout::computeBarSpan(sidePadding, pageWidth, labelWidth, valueWidth, cols.barColMax, BAR_GAP);
-        barX = barSpanResult.barX;
-        barSpan = barSpanResult.barSpan;
-      }
-    }
-
-    const bool visible = (lineIdx >= scrollOffset) && (y + lineH <= contentBottom);
-    if (visible) {
-      if (isHeading) {
-        r.drawText(UI_12_FONT_ID, sidePadding, y, label, true, 1 /* BOLD */);
-      } else {
-        r.drawText(UI_12_FONT_ID, sidePadding, y, labelStr.c_str(), true, alert ? 1 : 0);
-        r.drawText(UI_12_FONT_ID, pageWidth - sidePadding - valueWidth, y, valueStr.c_str());
-
-        // No percentage label, no logging, clamped fill — mirrors dropping
-        // GUI.drawProgressBar() in favor of drawing the bar directly.
-        if (bar >= 0 && barSpan > 0) {
-          const int barH = lineH - 12;
-          const int barY = y + (lineH - barH) / 2;
-          r.drawRect(barX, barY, barSpan, barH);
-          const int fillWidth = (barSpan > 4) ? (barSpan - 4) * bar / 100 : 0;
-          if (fillWidth > 0) r.fillRect(barX + 2, barY + 2, fillWidth, barH - 4, true);
+  auto drawBarShape = [&](int barX, int y, int barSpan, int rowLineH, const HttpMonitorSchema::BarSpec& bar) {
+    int barH = rowLineH - 12;
+    if (barH < 2) barH = 2;
+    const int barY = y + (rowLineH - barH) / 2;
+    if (bar.segments > 1 && barSpan > 8) {
+      const int totalGap = (bar.segments - 1) * 2;
+      const int cellW = (barSpan - totalGap) / bar.segments;
+      if (cellW >= 2) {
+        const int filledCells = (bar.value * bar.segments) / 100;
+        int cx = barX;
+        for (int s = 0; s < bar.segments; ++s) {
+          r.drawRect(cx, barY, cellW, barH);
+          if (s < filledCells) r.fillRect(cx, barY, cellW, barH, true);
+          cx += cellW + 2;
         }
+        return;
       }
-      y += lineH;
     }
-    lineIdx++;
+    // Single block: outline + flush fill (mirrors HttpMonitorActivity.cpp —
+    // value==100 fills the outline edge-to-edge, no (barSpan-4)/+2 inset).
+    r.drawRect(barX, barY, barSpan, barH);
+    const int fillWidth = barSpan * bar.value / 100;
+    if (fillWidth > 0) r.fillRect(barX, barY, fillWidth, barH, true);
   };
 
-  for (auto& section : sections) {
-    if (section.heading[0] != '\0') drawLine(true, section.heading, nullptr, -1, false);
-    for (auto& row : section.rows) drawLine(false, row.label, row.value, row.bar, row.alert);
+  auto drawAlertMarker = [&](int x, int y, int rowLineH) {
+    const int mh = 6;
+    const int my = y + (rowLineH - mh) / 2;
+    r.fillRect(x, my, mh, mh, true);
+  };
+
+  // 16x16 glyph cell at (gx, gy). Mirrors HttpMonitorActivity::drawGlyph(): '#'
+  // filled box, 'o' outline, '.' disk, '+' / 'x' crossed lines, '!' filled
+  // up-triangle, '^' / 'v' outline triangles, ' ' blank, anything else drawn as
+  // a centered SMALL glyph.
+  auto drawGlyph = [&](int gx, int gy, char ch) {
+    const int cx = gx, cy = gy;
+    switch (ch) {
+      case '#': r.fillRect(cx, cy, 16, 16, true); break;
+      case 'o': r.drawRect(cx, cy, 16, 16); break;
+      case '.': drawPipOn(r, cx + 8, cy + 8, 8); break;
+      case '+':
+        r.drawLine(cx + 8, cy + 2, cx + 8, cy + 13);
+        r.drawLine(cx + 2, cy + 8, cx + 13, cy + 8);
+        break;
+      case 'x':
+        r.drawLine(cx + 3, cy + 3, cx + 12, cy + 12);
+        r.drawLine(cx + 3, cy + 12, cx + 12, cy + 3);
+        break;
+      case '!': fillUpTriangle(r, cx, cy); break;
+      case '^':
+        r.drawLine(cx + 8, cy, cx, cy + 15);
+        r.drawLine(cx + 8, cy, cx + 15, cy + 15);
+        r.drawLine(cx, cy + 15, cx + 15, cy + 15);
+        break;
+      case 'v':
+        r.drawLine(cx, cy, cx + 8, cy + 15);
+        r.drawLine(cx + 15, cy, cx + 8, cy + 15);
+        r.drawLine(cx, cy, cx + 15, cy);
+        break;
+      case ' ': break;
+      default: {
+        char buf[2] = {ch, '\0'};
+        const int w = r.getTextWidth(SMALL_FONT_ID, buf);
+        r.drawText(SMALL_FONT_ID, cx + (16 - w) / 2, cy + 2, buf, true);
+        break;
+      }
+    }
+  };
+
+  // kv (and bar) rows. Mirrors HttpMonitorActivity::drawKv(): label/value column
+  // budgets, fractional-bar placement with the MIN_BAR_SPAN floor (bar-less kv
+  // below it), alert marker, and align-based block placement.
+  auto drawKv = [&](const HttpMonitorPreviewRow& row, int y, int rowLineH) {
+    const HttpMonitorSchema::BarSpec bar = effectiveBar(row);
+    const bool hasBar = bar.value >= 0;
+    const int rowFont = previewFontForSize(row.sizeIdx);
+    const int markerPad = row.alert ? 10 : 0;
+    const int style = (row.bold || row.alert) ? 1 : 0;
+    const auto cols = HttpMonitorLayout::computeRowColumns(contentWidth, hasBar);
+
+    const std::string labelStr = r.truncatedText(rowFont, row.label ? row.label : "", cols.labelColMax - markerPad, style);
+    const int labelWidth = r.getTextWidth(rowFont, labelStr.c_str(), style);
+
+    int valueWidth = r.getTextWidth(rowFont, row.value ? row.value : "");
+    const std::string valueStr =
+        (valueWidth > cols.valueColMax) ? r.truncatedText(rowFont, row.value ? row.value : "", cols.valueColMax) : (row.value ? row.value : "");
+    valueWidth = r.getTextWidth(rowFont, valueStr.c_str());
+
+    int barX = 0, barSpan = 0;
+    if (hasBar) {
+      const auto barResult = HttpMonitorLayout::placeFractionalBar(
+          sidePadding, pageWidth, markerPad + labelWidth, valueWidth, BAR_GAP, bar.widthPct,
+          static_cast<HttpMonitorLayout::BarAlign>(bar.align));
+      barX = barResult.barX;
+      barSpan = barResult.barSpan;
+    }
+
+    if (hasBar && barSpan >= HttpMonitorLayout::MIN_BAR_SPAN) {
+      // In-row bar between label and value; label left, value right-aligned.
+      if (row.alert) drawAlertMarker(sidePadding, y, rowLineH);
+      r.drawText(rowFont, sidePadding + markerPad, y, labelStr.c_str(), true, style);
+      r.drawText(rowFont, pageWidth - sidePadding - valueWidth, y, valueStr.c_str());
+      drawBarShape(barX, y, barSpan, rowLineH, bar);
+      return;
+    }
+
+    // Bar-less (or bar too stubby): label + value block, aligned per row.align.
+    const int blockGap = 16;
+    const int blockWidth = markerPad + labelWidth + blockGap + valueWidth;
+    int labelX;
+    switch (row.align) {
+      case 2:  // RIGHT
+        labelX = pageWidth - sidePadding - valueWidth - blockGap - labelWidth;
+        break;
+      case 1:  // CENTER
+        labelX = sidePadding + (contentWidth - blockWidth) / 2 + markerPad;
+        break;
+      default:  // LEFT
+        labelX = sidePadding + markerPad;
+        break;
+    }
+    const int valueX = labelX + labelWidth + blockGap;
+    if (row.alert) drawAlertMarker(labelX - markerPad, y, rowLineH);
+    r.drawText(rowFont, labelX, y, labelStr.c_str(), true, style);
+    r.drawText(rowFont, valueX, y, valueStr.c_str());
+  };
+
+  auto drawTextRow = [&](const HttpMonitorPreviewRow& row, int y, int rowLineH) {
+    const int rowFont = previewFontForSize(row.sizeIdx);
+    // Alert text rows are bolded and get the 6x6 marker + indent (mirrors the
+    // firmware drawTextRow); the wrap width shrinks by markerPad so the entry
+    // height (computed above) matches what is drawn.
+    const int markerPad = row.alert ? 10 : 0;
+    const int style = (row.bold || row.alert) ? 1 : 0;
+    const auto lines = r.wrappedText(rowFont, row.text ? row.text : "", contentWidth - markerPad, 2, style);
+    int ty = y;
+    for (const auto& line : lines) {
+      const int w = r.getTextWidth(rowFont, line.c_str());
+      if (row.align == 2) {  // RIGHT
+        r.drawText(rowFont, pageWidth - sidePadding - w, ty, line.c_str(), true, style);
+      } else if (row.align == 1) {  // CENTER (within the marker-indented band)
+        r.drawText(rowFont, sidePadding + markerPad + (contentWidth - markerPad - w) / 2, ty, line.c_str(), true,
+                   style);
+      } else {  // LEFT
+        r.drawText(rowFont, sidePadding + markerPad, ty, line.c_str(), true, style);
+      }
+      ty += rowLineH;
+    }
+    if (row.alert) drawAlertMarker(sidePadding, y, rowLineH);
+  };
+
+  auto drawDivider = [&](const HttpMonitorPreviewRow& row, int y) {
+    const int inset = std::min(row.dividerInset, contentWidth / 2);
+    const int left = sidePadding + inset;
+    const int right = pageWidth - sidePadding - inset;
+    const int ruleY = y + 6;
+    if (row.label && row.label[0] != '\0') {
+      const int labelW = r.getTextWidth(SMALL_FONT_ID, row.label);
+      const int cx = (left + right) / 2;
+      constexpr int LABEL_GAP = 8;
+      r.drawText(SMALL_FONT_ID, cx - labelW / 2, y, row.label, true);
+      const int leftEnd = cx - labelW / 2 - LABEL_GAP;
+      const int rightStart = cx + labelW / 2 + LABEL_GAP;
+      if (leftEnd > left) r.drawLine(left, ruleY, leftEnd, ruleY);
+      if (right > rightStart) r.drawLine(rightStart, ruleY, right, ruleY);
+    } else {
+      if (right > left) r.drawLine(left, ruleY, right, ruleY);
+    }
+  };
+
+  auto drawGlyphs = [&](const HttpMonitorPreviewRow& row, int y) {
+    const int rawCount = row.glyphs ? static_cast<int>(strlen(row.glyphs)) : 0;
+    if (rawCount <= 0) return;
+    // Clamp the run to the band (mirrors the firmware drawGlyphs): a 32-char
+    // glyphs string (636px) would overflow the ~440px band. Account for the
+    // label so the whole block stays in-band.
+    const int labelW = (row.label && row.label[0] != '\0') ? r.getTextWidth(SMALL_FONT_ID, row.label) : 0;
+    const int glyphsAvailable = contentWidth - ((row.label && row.label[0] != '\0') ? (labelW + 12) : 0);
+    const int glyphCount = std::min(rawCount, HttpMonitorLayout::maxGlyphsFor(glyphsAvailable));
+    const int glyphsW = glyphCount * 20 - 4;
+    int gx;
+    if (row.align == 2) {  // RIGHT
+      gx = pageWidth - sidePadding - glyphsW;
+    } else if (row.align == 1) {  // CENTER
+      gx = sidePadding + (contentWidth - glyphsW) / 2;
+    } else {  // LEFT
+      gx = sidePadding;
+    }
+    if (row.label && row.label[0] != '\0') {
+      r.drawText(SMALL_FONT_ID, gx, y, row.label, true);
+      gx += labelW + 12;
+    }
+    const int gy = y + (20 - 16) / 2;
+    for (int i = 0; i < glyphCount; ++i) {
+      drawGlyph(gx, gy, row.glyphs[i]);
+      gx += 20;
+    }
+  };
+
+  auto dispatchRow = [&](const HttpMonitorPreviewRow& row, int y, int rowLineH) {
+    switch (static_cast<HttpMonitorSchema::RowType>(row.type)) {
+      case HttpMonitorSchema::RowType::SPACER: break;
+      case HttpMonitorSchema::RowType::DIVIDER: drawDivider(row, y); break;
+      case HttpMonitorSchema::RowType::GLYPHS: drawGlyphs(row, y); break;
+      case HttpMonitorSchema::RowType::TEXT: drawTextRow(row, y, rowLineH); break;
+      default: drawKv(row, y, rowLineH); break;  // KV (and BAR)
+    }
+  };
+
+  // ---- draw loop: only entries that fully fit the band. ----
+  for (int k = 0; k < visibleEntries; ++k) {
+    const int i = scrollOffset + k;
+    if (i >= entryCount) break;  // scrollOffset+visibleEntries can pass the end
+                                 // when maxScroll = entryCount-1 — never index
+                                 // past the entry list.
+    const int y = HttpMonitorLayout::entryY(entryHeights.data(), scrollOffset, i, contentTop);
+    if (y + entryHeights[i] > contentBottom) break;
+    const PreviewEntry& e = entries[i];
+    if (e.kind == EntryKind::HEADING) {
+      r.drawText(rowFontGlobal, sidePadding, y, e.text, true, 1 /* BOLD */);
+    } else if (e.kind == EntryKind::ALERT) {
+      drawAlertMarker(sidePadding, y, rowLineHGlobal);
+      r.drawText(rowFontGlobal, sidePadding + 10, y, e.text, true, 1 /* BOLD */);
+    } else {
+      dispatchRow(*e.row, y, rowLineHGlobal);
+    }
+  }
+
+  if (sections.empty() && alerts.empty()) {
+    r.drawCenteredText(UI_10_FONT_ID, (contentTop + contentBottom) / 2, "No data");
   }
 
   if (needsScrollIndicator) {
     char scrollBuf[16];
-    const int pageSize = (visibleLines > 0) ? visibleLines : 1;
-    const int totalPages = HttpMonitorLayout::computeTotalPages(totalLines, pageSize);
+    const int pageSize = (visibleEntries > 0) ? visibleEntries : 1;
+    const int totalPages = HttpMonitorLayout::computeTotalPages(entryCount, pageSize);
     snprintf(scrollBuf, sizeof(scrollBuf), "%d/%d", scrollOffset / pageSize + 1, totalPages);
     const int w = r.getTextWidth(SMALL_FONT_ID, scrollBuf);
     r.drawText(SMALL_FONT_ID, pageWidth - sidePadding - w, unreservedContentTop, scrollBuf);
@@ -408,7 +826,7 @@ static void renderHttpMonitorDashboard(GfxRenderer& r) {
     {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}}},
     {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}}},
   };
-  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", 0);
+  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", 0, "12:01:02");
 }
 
 static void renderHttpMonitorError(GfxRenderer& r) {
@@ -582,6 +1000,89 @@ void render_httpmonitor_noconfig_x3() {
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_noconfig_x3.bmp"));
 }
 
+// ---- extended-schema previews ----
+// A dashboard that exercises every typed row (text / spacer / divider / glyphs),
+// object-form bars with segments + fractional width + align, a per-row SMALL
+// `size`, an `updated` timestamp, and an alerts section — at both panel
+// geometries, rendered at rest (top) and scrolled to maxScroll (bottom). The
+// mixed heights (wrapped text, 8px spacer, 12px dividers, 20px glyph bands) are
+// exactly what the per-entry scroll model exists for.
+
+static std::vector<HttpMonitorPreviewSection> mixedHttpMonitorSections() {
+  std::vector<HttpMonitorPreviewSection> s;
+  s.push_back({"System", {
+    kvRow("CPU", "23%", 23),
+    textRow("All services nominal", 1 /* CENTER */, true),
+    kvRow("Memory", "6.0/16 GB", 37),
+    dividerRow("Storage", 10, 2),
+    kvRow("/data", "88%", 88, true),
+    kvRow("/", "41%", 41),
+  }});
+  s.push_back({"Tuned", {
+    barObjRow("cache", "62%", 62, 8, 100, 0 /* LEFT */),
+    kvRow("temp", "52C", -1),
+    barObjRow("buff", "33%", 33, 5, 50, 2 /* RIGHT */),
+    textRow("Log rotation paused; retry once the disk is under 90%", 0 /* LEFT */, false, 0 /* SMALL */),
+    spacerRow(8),
+    kvRow("swap", "4%", 4),
+  }});
+  s.push_back({"LEDs", {
+    glyphsRow("#o#x+!", "status", 0 /* LEFT */),
+    glyphsRow(".o#", nullptr, 1 /* CENTER */),
+    kvRow("eth0 rx", "1.2 MB/s"),
+    kvRow("eth0 tx", "340 KB/s"),
+    dividerRow(nullptr, 0, 1),
+    textRow("Network nominal", 1 /* CENTER */, true),
+  }});
+  s.push_back({"Services", {
+    kvRow("nginx", "up 4d"),
+    kvRow("postgres", "up 4d"),
+    kvRow("redis", "DOWN", -1, true),
+    kvRow("cron", "up 4d"),
+    textRow("Maintenance window 02:00-03:00 UTC", 1 /* CENTER */),
+    kvRow("backup", "OK"),
+  }});
+  return s;
+}
+
+void render_httpmonitor_mixed_x4_top() {
+  GfxRenderer r(480, 800);
+  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
+  const int maxScroll =
+      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x4_top.bmp"));
+}
+
+void render_httpmonitor_mixed_x4_scrolled() {
+  GfxRenderer r(480, 800);
+  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
+  const int maxScroll =
+      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", maxScroll, "12:01:02", alerts);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x4_scrolled.bmp"));
+}
+
+void render_httpmonitor_mixed_x3_top() {
+  GfxRenderer r(528, 792);
+  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
+  const int maxScroll =
+      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x3_top.bmp"));
+}
+
+void render_httpmonitor_mixed_x3_scrolled() {
+  GfxRenderer r(528, 792);
+  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
+  const int maxScroll =
+      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", maxScroll, "12:01:02", alerts);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x3_scrolled.bmp"));
+}
+
 // ============================================================
 // YOUR NEW ACTIVITY — copy this template:
 // ============================================================
@@ -631,5 +1132,9 @@ int main() {
   RUN_TEST(render_httpmonitor_error_x3);
   RUN_TEST(render_httpmonitor_noconfig_x4);
   RUN_TEST(render_httpmonitor_noconfig_x3);
+  RUN_TEST(render_httpmonitor_mixed_x4_top);
+  RUN_TEST(render_httpmonitor_mixed_x4_scrolled);
+  RUN_TEST(render_httpmonitor_mixed_x3_top);
+  RUN_TEST(render_httpmonitor_mixed_x3_scrolled);
   return UNITY_END();
 }

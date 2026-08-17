@@ -10,8 +10,10 @@ firmware source.
 The device sends a plain `GET` request to the URL you configure in
 `monitor.conf`, once every `interval_sec` seconds (default 30), and expects a
 single JSON object back. It renders that object as a dashboard: a title, a
-timestamp, and a list of sections, each containing rows of label/value pairs
-with optional progress bars.
+timestamp, and a list of sections. Each section contains typed rows — the
+classic label/value pair with an optional progress bar, plus text, divider,
+spacer, and glyph bands — with shared alignment, bold, and font-size
+formatting (see §2).
 
 The intended deployment is **plain HTTP over a trusted local network** — see
 the security note at the end of this document before exposing the endpoint
@@ -26,7 +28,10 @@ any wider than that.
   "sections": [
     { "heading": "System", "rows": [
         { "label": "CPU",    "value": "23%",       "bar": 23 },
-        { "label": "Memory", "value": "6.0/16 GB", "bar": 37 } ] },
+        { "label": "Memory", "value": "6.0/16 GB",
+          "bar": { "value": 37, "segments": 8, "width": 0.8, "align": "left" } },
+        { "type": "text", "text": "Maintenance window Sun 02:00", "align": "center" },
+        { "type": "divider", "label": "Disks" } ] },
     { "heading": "Disks", "rows": [
         { "label": "/data",  "value": "88%", "bar": 88, "alert": true } ] }
   ],
@@ -41,11 +46,39 @@ any wider than that.
 | `sections` | array of section objects | **required** (may be empty, but see failure semantics) | The body of the dashboard. |
 | `sections[].heading` | string | optional | Section heading, drawn above its rows. Omit for an unheaded group of rows. |
 | `sections[].rows` | array of row objects | **required** | The rows in this section. |
-| `sections[].rows[].label` | string | **required** | Left-hand text, e.g. `"CPU"`. |
-| `sections[].rows[].value` | string | **required** | Right-hand text, e.g. `"23%"`. |
-| `sections[].rows[].bar` | integer 0–100 | optional | Draws a progress bar for the row. Omit it and the row renders as label/value text only. |
-| `sections[].rows[].alert` | boolean | optional | `true` visually emphasizes the row (e.g. bold/highlighted). Defaults to `false`. |
+| `sections[].rows[].type` | string | optional | Row kind: `kv` (default), `text`, `bar`, `spacer`, `divider`, `glyphs`. Unknown values fall back to `kv`. |
+| `sections[].rows[].label` | string | required for `kv`/`bar`/`divider`/`glyphs` | Left-hand text for `kv`/`bar` rows, a centered caption for `divider` rows, a left label for `glyphs` rows. |
+| `sections[].rows[].value` | string | required for `kv`/`bar` | Right-hand text, e.g. `"23%"`. |
+| `sections[].rows[].bar` | integer 0–100, or object | optional | Progress bar for the row. Integer form is full-width between label and value. Object form: `value` (0–100), `segments` (1–24 cells), `width` (0.1–1.0, fraction of the label→value span), `align` (`left`/`center`/`right`). |
+| `sections[].rows[].text` | string | required for `text` | The text to display; wraps to at most 2 lines. |
+| `sections[].rows[].glyphs` | array of strings | required for `glyphs` | Up to 32 one-character cells drawn as geometric shapes (see "Row types" below). |
+| `sections[].rows[].align` | string | optional | `left` (default), `center`, or `right`. Row-wide alignment (bar-less kv value placement, text line alignment, divider/glyph placement). |
+| `sections[].rows[].bold` | boolean | optional | `true` draws the row's text bold. Defaults to `false`. |
+| `sections[].rows[].size` | integer 0–3 | optional | Font-size ladder index (0 smallest … 3 largest). Omit to inherit the dashboard's current live font size (the one the user adjusts with Up/Down). |
+| `sections[].rows[].alert` | boolean | optional | `true` visually emphasizes the row (bold + a marker). Defaults to `false`. |
+| `sections[].rows[].height` | integer 2–60 | optional | `spacer` rows only: band height in px (default 10). |
+| `sections[].rows[].inset` | integer ≥ 0 | optional | `divider` rows only: inset each end of the rule from the content edges (default 0). |
+| `sections[].rows[].lineWidth` | integer 1–2 | optional | `divider` rows only: rule thickness in px (default 1). |
 | `alerts` | array of strings | optional | A separate, top-level list of alert messages, shown outside the section rows. |
+
+### Row types
+
+`type` selects the row's rendering; the other fields mean different things per
+type:
+
+| `type` | What renders |
+|---|---|
+| `kv` (default) | `label` left, `value` right-aligned, optional `bar` spanning between them. |
+| `bar` | Same layout as `kv`; a `bar` is expected. |
+| `text` | `text`, wrapped to at most 2 lines. |
+| `spacer` | Blank vertical space, `height` px. |
+| `divider` | A horizontal rule, optionally with a centered `label` caption. |
+| `glyphs` | `glyphs` cells (16×16 px each at 4 px gaps), optionally preceded by a `label`. |
+
+Glyph characters: `#` filled square, `o` hollow square, `.` filled disk, `+`
+plus sign, `x` cross, `!` filled triangle, `^` up-triangle outline, `v`
+down-triangle outline, space = blank cell; any other character renders as a
+small text glyph.
 
 **The device does no computation.** Send display-ready strings — `"6.0/16 GB"`,
 not a raw byte count; `"23%"`, not a raw float. Formatting a percentage or a
@@ -64,6 +97,10 @@ is raised, the excess is simply not rendered.
 | Rows per section | 12 |
 | Label | 24 chars (ellipsized) |
 | Value | 16 chars (ellipsized) |
+| Text (`text` rows) | 64 chars (wrapped to 2 lines) |
+| Glyphs (`glyphs` rows) | 32 chars |
+| Bar segments | 1–24 cells |
+| Bar width | 10–100% of the label→value span |
 | Alerts | 4 |
 
 Design your payload to fit inside these before worrying about screen layout.
@@ -95,7 +132,8 @@ Worked out for each panel:
 | `contentBand` | 800 − 5 − 45 − 10 − 40 − 10 = **690 px** | 792 − 5 − 45 − 10 − 40 − 10 = **682 px** |
 | Rows at 35 px pitch | **19 rows** | **19 rows** |
 
-That's with **no section headings** and no rows carrying a `bar`.
+That's with **no section headings** (bar rows share the 35 px pitch of plain
+`kv` rows, so they don't change the count).
 
 The 35 px pitch is the row font's line height (29 px) plus 6 px of padding.
 Rows and section headings occupy one line each at that same pitch, so treat
@@ -103,10 +141,12 @@ the budget as **19 lines total**, headings included.
 
 ### Caveats
 
-- **A row whose `bar` cannot fit beside its label and value is taller.** When
-  the label and value are wide enough to squeeze the bar below a readable
-  minimum, the device moves that row's bar onto its own thin band underneath,
-  making the row about 55 px instead of 35 px. Short labels avoid this.
+- **A bar that cannot fit beside its label and value is dropped, not moved
+  elsewhere.** The bar spans the full gap between label and value. If wide
+  label + value text squeezes that span below a 24 px readable floor, the
+  device drops the bar and renders the row as plain label/value text. Bar rows
+  always share the 35 px pitch of a plain `kv` row — they never get taller.
+  Short labels and values keep the bar.
 - **Section headings consume budget too** — each `heading` you set costs one
   of the 19 lines.
 - **The user can select a different theme, and you do not control which.**

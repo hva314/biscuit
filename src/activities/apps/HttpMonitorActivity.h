@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "HttpMonitorConfig.h"
+#include "HttpMonitorSchema.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
@@ -26,45 +27,22 @@ class HttpMonitorActivity final : public Activity {
  private:
   enum State { NO_CONFIG, IDLE, FETCHING, SHOWING, ERROR };
 
-  // Hard caps on untrusted response data. Sections/rows/alerts/label/value are
-  // enforced as the response is walked, before anything lands in `dashboard`.
-  // The 8 KB body cap is NOT a hard bound on memory used while parsing: it only
-  // rejects responses whose server-declared Content-Length exceeds the limit
-  // (fetch() checks http.getSize() before parsing) or is absent/unknown. A
-  // server that lies about Content-Length can still make ArduinoJson read an
-  // unbounded amount from getStream() before the per-array caps below apply —
-  // deserializeJson() degrades to a NoMemory DeserializationError rather than
-  // crashing (ArduinoJson v7), so this doesn't corrupt anything, but it means
-  // the 8 KB figure is a cap on trusted-length responses, not a hard ceiling.
-  static constexpr int MAX_SECTIONS = 6;
-  static constexpr int MAX_ROWS_PER_SECTION = 12;
-  static constexpr int MAX_ALERTS = 4;
-  static constexpr int MAX_LABEL_LEN = 24;
-  static constexpr int MAX_VALUE_LEN = 16;
+  // Hard caps on untrusted response data (sections/rows/alerts/label/value/
+  // text/glyphs) live in HttpMonitorSchema.h and are enforced as the filtered
+  // document is walked, before anything lands in `dashboard`. The 8 KB body cap
+  // below is NOT a hard bound on memory used while parsing: it only rejects
+  // responses whose server-declared Content-Length exceeds the limit (fetch()
+  // checks http.getSize() before parsing) or is absent/unknown. A server that
+  // lies about Content-Length can still make ArduinoJson read an unbounded
+  // amount from getStream() before the schema caps apply — deserializeJson()
+  // degrades to a NoMemory DeserializationError rather than crashing
+  // (ArduinoJson v7), so this doesn't corrupt anything, but it means the 8 KB
+  // figure is a cap on trusted-length responses, not a hard ceiling.
   static constexpr long MAX_BODY_BYTES = 8192;
-
-  struct Row {
-    char label[MAX_LABEL_LEN + 1] = {};
-    char value[MAX_VALUE_LEN + 1] = {};
-    int bar = -1;  // -1 = no bar (text-only row), else 0..100
-    bool alert = false;
-  };
-
-  struct Section {
-    char heading[MAX_LABEL_LEN + 1] = {};
-    std::vector<Row> rows;
-  };
-
-  struct Dashboard {
-    char title[32] = {};
-    char updated[32] = {};
-    std::vector<Section> sections;
-    std::vector<std::array<char, 48>> alerts;
-  };
 
   State state = NO_CONFIG;
   HttpMonitorConfig::Config config;
-  Dashboard dashboard;
+  HttpMonitorSchema::Dashboard dashboard;
   std::string configError;
   std::string fetchError;
   int httpStatusCode = 0;
@@ -74,6 +52,14 @@ class HttpMonitorActivity final : public Activity {
   int framesUntilClean = 1;
   bool hasDashboard = false;
   bool cleanRefreshDue = false;
+  // Liveness dial: the dashboard header's far-right 24x24 corner is a ring +
+  // second-hand. loop() advances spinnerFrame 1Hz while the dashboard is showing;
+  // renderDashboard() paints the ring and hand from it. dialCleanCountdown forces
+  // a clean HALF_REFRESH once a minute so the e-ink does not ghost the previous
+  // hand position between partial refreshes.
+  int spinnerFrame = 0;
+  unsigned long lastSpinnerUpdate = 0;
+  int dialCleanCountdown = 60;
   int fontSizeIndex = HttpMonitorConfig::DEFAULT_FONT_SIZE;  // index into the dashboard font ladder
   ButtonNavigator buttonNavigator;
 
@@ -94,6 +80,10 @@ class HttpMonitorActivity final : public Activity {
   // renderer.getFontMap() (a shipping -DOMIT_FONTS build only registers a
   // handful of fonts) — falls back to UI_12_FONT_ID if the candidate is absent.
   int dashboardFontId() const;
+  // Maps a row's `size` field (0..3) to a registered font id, validated against
+  // renderer.getFontMap() like dashboardFontId(); SIZE_INHERIT selects the
+  // dashboard's current font (fontSizeIndex). Falls back to UI_12 if absent.
+  int fontForSize(uint8_t sizeIdx) const;
   void adjustFontSize(int delta);
   void saveFontSize();
 };

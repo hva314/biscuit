@@ -25,7 +25,7 @@ class CipherActivity final : public Activity {
   int cipherIndex = 0;
   std::string inputText;
   std::string keyText;
-  std::string result;
+  std::string outputText;
 
   bool needsKey() const;
   void computeResult();

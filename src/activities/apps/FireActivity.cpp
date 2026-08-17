@@ -21,7 +21,7 @@
 // ---------------------------------------------------------------------------
 static void sanitizeFilename(char* out, size_t outLen, const char* input) {
   size_t j = 0;
-  for (size_t i = 0; input[i] && j < outLen - 1; i++) {
+  for (size_t i = 0; j < outLen - 1 && input[i]; i++) {
     char c = input[i];
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
         c == '.') {
@@ -563,7 +563,7 @@ void FireActivity::checkEapolFrame(const uint8_t* data, uint16_t len) {
           pos += snprintf(line + pos, sizeof(line) - pos, "*");
           // ESSID hex
           if (target && target->ssid[0]) {
-            for (int j = 0; target->ssid[j] && j < 32; j++)
+            for (int j = 0; j < 32 && target->ssid[j]; j++)
               pos += snprintf(line + pos, sizeof(line) - pos, "%02x", (uint8_t)target->ssid[j]);
           }
           pos += snprintf(line + pos, sizeof(line) - pos, "\n");

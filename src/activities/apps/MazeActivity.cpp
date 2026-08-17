@@ -168,7 +168,12 @@ void MazeActivity::tracePath() {
     if (par < 0 || par == cur) break;
     cur = par;
   }
-  solvePath[solvePathLen++] = static_cast<int16_t>(startI);
+  // Guard the terminating write: the loop above can exit with
+  // solvePathLen == MAX_PATH, and MAX_PATH equals the full grid size
+  // (MAX_W * MAX_H), so an unguarded store here runs one past the end.
+  if (solvePathLen < MAX_PATH) {
+    solvePath[solvePathLen++] = static_cast<int16_t>(startI);
+  }
 
   // Reverse so path goes from start to exit
   for (int i = 0, j = solvePathLen - 1; i < j; i++, j--) {

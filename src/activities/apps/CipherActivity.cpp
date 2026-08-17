@@ -120,28 +120,28 @@ bool CipherActivity::needsKey() const {
 void CipherActivity::computeResult() {
   switch (cipherIndex) {
     case 0:
-      result = rot13(inputText);
+      outputText = rot13(inputText);
       break;
     case 1:
-      result = caesar(inputText, atoi(keyText.c_str()));
+      outputText = caesar(inputText, atoi(keyText.c_str()));
       break;
     case 2:
-      result = vigenere(inputText, keyText);
+      outputText = vigenere(inputText, keyText);
       break;
     case 3:
-      result = xorCipher(inputText, keyText);
+      outputText = xorCipher(inputText, keyText);
       break;
     case 4:
-      result = atbash(inputText);
+      outputText = atbash(inputText);
       break;
     case 5:
-      result = base64Encode(inputText);
+      outputText = base64Encode(inputText);
       break;
     case 6:
-      result = base64Decode(inputText);
+      outputText = base64Decode(inputText);
       break;
     default:
-      result = inputText;
+      outputText = inputText;
       break;
   }
 }
@@ -152,7 +152,7 @@ void CipherActivity::onEnter() {
   cipherIndex = 0;
   inputText.clear();
   keyText.clear();
-  result.clear();
+  outputText.clear();
   requestUpdate();
 }
 
@@ -251,7 +251,7 @@ void CipherActivity::renderResult() const {
   renderer.drawCenteredText(SMALL_FONT_ID, top + 24, "Input:");
   renderer.drawCenteredText(UI_10_FONT_ID, top + 44, inputText.c_str());
   renderer.drawCenteredText(SMALL_FONT_ID, top + 90, "Result:");
-  renderer.drawCenteredText(UI_10_FONT_ID, top + 110, result.c_str());
+  renderer.drawCenteredText(UI_10_FONT_ID, top + 110, outputText.c_str());
 
   const auto labels = mappedInput.mapLabels("Back", "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

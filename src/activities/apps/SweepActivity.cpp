@@ -34,7 +34,7 @@ static constexpr int SKIMMER_OUI_COUNT = 3;
 
 static void toUpperBuf(const char* src, char* dst, size_t dstLen) {
   size_t i = 0;
-  for (; src[i] && i < dstLen - 1; i++) dst[i] = static_cast<char>(toupper(static_cast<unsigned char>(src[i])));
+  for (; i < dstLen - 1 && src[i]; i++) dst[i] = static_cast<char>(toupper(static_cast<unsigned char>(src[i])));
   dst[i] = '\0';
 }
 

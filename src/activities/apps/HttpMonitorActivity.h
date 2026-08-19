@@ -7,7 +7,6 @@
 #include "HttpMonitorConfig.h"
 #include "HttpMonitorSchema.h"
 #include "activities/Activity.h"
-#include "util/ButtonNavigator.h"
 
 // A live server dashboard. Polls a JSON status endpoint on a timer and renders a
 // server-driven schema (sections -> rows). See docs/http-monitor.md and
@@ -48,25 +47,30 @@ class HttpMonitorActivity final : public Activity {
   int httpStatusCode = 0;
   unsigned long lastPollMs = 0;
   unsigned long pollIntervalMs = 30000;
-  int scrollOffset = 0;
-  int framesUntilClean = 1;
+  int pollsUntilClean = 1;
   bool hasDashboard = false;
   bool cleanRefreshDue = false;
+  // The state whose content is currently on the panel. fetch() compares against
+  // this (not `state`, which is always FETCHING at commit time) to decide whether
+  // a poll needs to touch the e-ink at all.
+  State displayedState = NO_CONFIG;
+  // Set when the user presses Confirm. A manual refresh always repaints, even if
+  // the server returns byte-identical data: the press is an explicit request for
+  // a redraw, and silently skipping it makes the button look broken. Automatic
+  // polls have no such obligation — that is the whole point of the skip.
+  bool forceRedraw = false;
   // Liveness dial: the dashboard header's far-right 24x24 corner is a ring +
-  // second-hand. loop() advances spinnerFrame 1Hz while the dashboard is showing;
-  // renderDashboard() paints the ring and hand from it. dialCleanCountdown forces
-  // a clean HALF_REFRESH once a minute so the e-ink does not ghost the previous
-  // hand position between partial refreshes.
+  // second-hand. loop() advances spinnerFrame every config.dialTickSec seconds
+  // while the dashboard is showing; renderDashboard() paints the ring and hand
+  // from it.
+  //
+  // Every tick costs a whole-panel e-ink update, so the tick period is a direct
+  // multiplier on panel wear -- this used to be hardcoded at 1Hz, which is
+  // ~86k updates/day for a decorative second hand. dial_tick_sec = 0 disables
+  // the dial and, with unchanged server data, leaves the panel completely idle
+  // between polls.
   int spinnerFrame = 0;
   unsigned long lastSpinnerUpdate = 0;
-  int dialCleanCountdown = 60;
-  int fontSizeIndex = HttpMonitorConfig::DEFAULT_FONT_SIZE;  // index into the dashboard font ladder
-  ButtonNavigator buttonNavigator;
-
-  // Runtime sidecar (not the user-edited monitor.conf) that persists the last
-  // font size chosen live with Up/Down, so it survives a reboot without
-  // rewriting (and clobbering comments in) monitor.conf.
-  static constexpr const char* FONT_STATE_PATH = "/biscuit/monitor_state.dat";
 
   void loadConfig();
   void fetch();
@@ -76,14 +80,15 @@ class HttpMonitorActivity final : public Activity {
   void renderError();
   void renderDashboard();
 
-  // Maps fontSizeIndex to a registered font id, validated against
+  // The dashboard-wide font size: the server's top-level `fontSize` when it sent
+  // one, otherwise monitor.conf's `font_size`. Returns a ladder index (0..3).
+  int dashboardFontSizeIndex() const;
+  // Maps dashboardFontSizeIndex() to a registered font id, validated against
   // renderer.getFontMap() (a shipping -DOMIT_FONTS build only registers a
   // handful of fonts) — falls back to UI_12_FONT_ID if the candidate is absent.
   int dashboardFontId() const;
   // Maps a row's `size` field (0..3) to a registered font id, validated against
   // renderer.getFontMap() like dashboardFontId(); SIZE_INHERIT selects the
-  // dashboard's current font (fontSizeIndex). Falls back to UI_12 if absent.
+  // dashboard-wide font. Falls back to UI_12 if absent.
   int fontForSize(uint8_t sizeIdx) const;
-  void adjustFontSize(int delta);
-  void saveFontSize();
 };

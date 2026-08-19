@@ -43,6 +43,7 @@ any wider than that.
 |---|---|---|---|
 | `title` | string | optional | Header text. Overrides the `title` set in the device's `monitor.conf`, if present. |
 | `updated` | string | optional | A display-ready timestamp string. The device shows it as-is; it does not parse or reformat it. |
+| `fontSize` | integer 0–3 | optional | Dashboard-wide font size (0 smallest … 3 largest). **This is how you set the font size** — the device has no font-size buttons. Omit it (or send anything outside 0–3) and the device falls back to `font_size` in its `monitor.conf`. Individual rows can still override it with `size`. |
 | `sections` | array of section objects | **required** (may be empty, but see failure semantics) | The body of the dashboard. |
 | `sections[].heading` | string | optional | Section heading, drawn above its rows. Omit for an unheaded group of rows. |
 | `sections[].rows` | array of row objects | **required** | The rows in this section. |
@@ -54,7 +55,7 @@ any wider than that.
 | `sections[].rows[].glyphs` | array of strings | required for `glyphs` | Up to 32 one-character cells drawn as geometric shapes (see "Row types" below). |
 | `sections[].rows[].align` | string | optional | `left` (default), `center`, or `right`. Row-wide alignment (bar-less kv value placement, text line alignment, divider/glyph placement). |
 | `sections[].rows[].bold` | boolean | optional | `true` draws the row's text bold. Defaults to `false`. |
-| `sections[].rows[].size` | integer 0–3 | optional | Font-size ladder index (0 smallest … 3 largest). Omit to inherit the dashboard's current live font size (the one the user adjusts with Up/Down). |
+| `sections[].rows[].size` | integer 0–3 | optional | Font-size ladder index (0 smallest … 3 largest). Omit to inherit the dashboard-wide font size (the top-level `fontSize`, or `monitor.conf`'s `font_size` if you don't send one). |
 | `sections[].rows[].alert` | boolean | optional | `true` visually emphasizes the row (bold + a marker). Defaults to `false`. |
 | `sections[].rows[].height` | integer 2–60 | optional | `spacer` rows only: band height in px (default 10). |
 | `sections[].rows[].inset` | integer ≥ 0 | optional | `divider` rows only: inset each end of the rule from the content edges (default 0). |
@@ -167,13 +168,24 @@ the budget as **19 lines total**, headings included.
 ### Recommendation
 
 **Target ≤ 12 rows plus ≤ 4 headings** — 16 lines, leaving two lines of margin
-against the 18-line worst case. That fits on one screen with no scrolling, on
-both panels, under every theme. This exact budget is covered by a rendering
-test (`render_httpmonitor_dense_x3_top`), which asserts it does not scroll.
+against the 18-line worst case. That fits on one screen on both panels, under
+every theme. This exact budget is covered by a rendering test
+(`render_httpmonitor_dense_x3_top`), which asserts that nothing is clipped.
 
-Sending more is supported — the device scrolls with Up/Down — but the user
-then has to press a button to see the rest, which is worth avoiding for a
-dashboard meant to be glanced at.
+> **The dashboard does not scroll.** There is no way for the user to reach
+> content that doesn't fit — rows past the bottom of the screen are **silently
+> dropped**, clipped at a row boundary so you never see a half-drawn row. Fitting
+> the screen is entirely the server's job.
+>
+> The two levers are this row budget and the `fontSize` field. If you need more
+> rows, send a smaller `fontSize`; if you need bigger text, send fewer rows. When
+> content is dropped the device logs
+> `[INF] HTTPMON Content does not fit: N of M entries drawn` over serial, which is
+> the fastest way to confirm you are over budget.
+
+Note that the budget depends on the `fontSize` you send — the numbers above assume
+the default. A larger `fontSize` means taller rows and correspondingly fewer of
+them.
 
 ## 5. Worked example
 

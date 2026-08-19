@@ -81,14 +81,6 @@ inline BarSpan placeFractionalBar(int contentSidePadding, int pageWidth, int lab
   return BarSpan{fullX + offset, span};
 }
 
-// Total scrollable entries: one per non-empty heading, one per row, plus an
-// "Alerts" heading and one line per alert if any were sent.
-inline int computeTotalLines(int headingCount, int rowCount, int alertCount) {
-  int total = headingCount + rowCount;
-  if (alertCount > 0) total += 1 + alertCount;
-  return total;
-}
-
 // ---- per-entry heights ----
 // Rows no longer share one uniform pitch (size ladder, wrapped text, spacers,
 // dividers, glyph bands all break it), so every entry contributes its own
@@ -117,60 +109,31 @@ inline int maxGlyphsFor(int contentWidth) {
   return n < 0 ? 0 : n;
 }
 
-// Per-entry scroll metrics over the entryHeights[] prefix sum.
-struct ScrollMetrics {
-  int visibleEntries;  // leading entries that fully fit the band from contentTop
-  int maxScroll;       // farthest offset whose trailing suffix fits the band
-};
-
-inline ScrollMetrics computeScrollMetrics(const int* entryHeights, int entryCount, int contentTop, int contentBottom) {
-  if (entryCount <= 0 || entryHeights == nullptr) return ScrollMetrics{0, 0};
+// How many entries, starting from the top of the content band, fit completely.
+//
+// The dashboard does not scroll: the server owns both the font size and the
+// amount of content, so anything that does not fit is clipped. Entries must fit
+// *entirely* -- a partially drawn row reads as a rendering bug, not as a hint
+// that there is more below. Degenerate inputs yield 0 rather than indexing.
+inline int visibleEntryCount(const int* entryHeights, int entryCount, int contentTop, int contentBottom) {
+  if (entryCount <= 0 || entryHeights == nullptr) return 0;
   int y = contentTop;
   int visible = 0;
   while (visible < entryCount) {
-    if (y + entryHeights[visible] > contentBottom) break;  // must fully fit
+    if (y + entryHeights[visible] > contentBottom) break;
     y += entryHeights[visible];
     ++visible;
   }
-  // Farthest offset that still shows the final entry on screen. Reverse walk:
-  // accumulate the trailing suffix heights from the last entry; the smallest
-  // offset whose suffix fits the band is the last useful scroll position.
-  // entryCount - visible undercounts this with variable heights (a tall
-  // trailing row would be permanently unreachable). Falls back to the last
-  // index when even the final entry alone is taller than the band.
-  const int band = contentBottom - contentTop;
-  int acc = 0;
-  int maxScroll = entryCount - 1;
-  for (int i = entryCount - 1; i >= 0; --i) {
-    acc += entryHeights[i];
-    if (acc > band) break;
-    maxScroll = i;
-  }
-  return ScrollMetrics{visible, maxScroll};
+  return visible;
 }
 
-// Prefix-sum y cursor: entry i sits at contentTop + sum of entryHeights[]
-// from scrollOffset (inclusive) up to i (exclusive).
-inline int entryY(const int* entryHeights, int scrollOffset, int i, int contentTop) {
-  if (scrollOffset < 0) scrollOffset = 0;
-  if (i < scrollOffset) i = scrollOffset;
+// Top edge of entry `i`, given every entry above it is drawn in order from
+// contentTop. Plain prefix sum -- with scrolling gone there is no offset.
+inline int entryY(const int* entryHeights, int i, int contentTop) {
+  if (entryHeights == nullptr || i <= 0) return contentTop;
   int y = contentTop;
-  for (int k = scrollOffset; k < i; ++k) y += entryHeights[k];
+  for (int k = 0; k < i; ++k) y += entryHeights[k];
   return y;
-}
-
-inline int clampScrollOffset(int scrollOffset, int maxScroll) {
-  if (scrollOffset > maxScroll) return maxScroll;
-  if (scrollOffset < 0) return 0;
-  return scrollOffset;
-}
-
-// Total page count for the "current/total" scroll indicator — NOT maxScroll /
-// pageSize + 1, which reads "1/1" on a genuinely scrollable list whenever the
-// last page is a partial page smaller than pageSize.
-inline int computeTotalPages(int totalEntries, int pageSize) {
-  if (pageSize <= 0) return 1;
-  return (totalEntries + pageSize - 1) / pageSize;
 }
 
 }  // namespace HttpMonitorLayout

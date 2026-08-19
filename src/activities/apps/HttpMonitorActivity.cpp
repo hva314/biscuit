@@ -2,7 +2,6 @@
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <HalStorage.h>
 #include <Logging.h>
 #include <WiFi.h>
 
@@ -51,22 +50,7 @@ void HttpMonitorActivity::loadConfig() {
   if (HttpMonitorConfig::loadFromSd(config, configError)) {
     state = IDLE;
     pollIntervalMs = static_cast<unsigned long>(config.intervalSec) * 1000UL;
-    framesUntilClean = (config.fullRefreshEvery > 0) ? config.fullRefreshEvery : 1;
-
-    // font_size in monitor.conf is the initial value; the sidecar (written by
-    // Up/Down at runtime) overrides it so the last live choice survives a reboot
-    // without rewriting (and clobbering comments in) monitor.conf.
-    fontSizeIndex = config.fontSize;
-    if (Storage.exists(FONT_STATE_PATH)) {
-      const String s = Storage.readFile(FONT_STATE_PATH);
-      // Require a real digit — atoi("") and atoi("garbage") both return 0, which
-      // would otherwise silently pin the font to the smallest size and discard
-      // the monitor.conf font_size default on a corrupt/empty sidecar.
-      if (s.length() > 0 && s[0] >= ('0' + HttpMonitorConfig::MIN_FONT_SIZE) &&
-          s[0] <= ('0' + HttpMonitorConfig::MAX_FONT_SIZE)) {
-        fontSizeIndex = s[0] - '0';
-      }
-    }
+    pollsUntilClean = (config.fullRefreshEvery > 0) ? config.fullRefreshEvery : 1;
   } else {
     state = NO_CONFIG;
   }
@@ -87,26 +71,25 @@ void HttpMonitorActivity::loop() {
     return;
   }
 
-  // Liveness dial: advance the header hand once per second while the dashboard
-  // is on screen (SHOWING only). The dial is drawn in renderDashboard(), so
-  // advancing it in FETCHING/ERROR would repaint a framebuffer whose visible
-  // content does not change — a full clearScreen+redraw every second with no
-  // visible effect (battery drain, panel wear, ghosting). The mutation runs
-  // under the RenderLock because the render task reads spinnerFrame, then a
-  // single redraw is requested. E-ink partial refresh leaves a faint ghost of
-  // the previous hand, so dialCleanCountdown forces a clean HALF_REFRESH every
-  // 60 ticks (~1 minute wall-clock).
-  if (state == SHOWING) {
+  // Liveness dial: advance the header hand every config.dialTickSec seconds while
+  // the dashboard is on screen (SHOWING only). The dial is drawn in
+  // renderDashboard(), so advancing it in FETCHING/ERROR would repaint a
+  // framebuffer whose visible content does not change — a full clearScreen+redraw
+  // with no visible effect (battery drain, panel wear, ghosting). The mutation
+  // runs under the RenderLock because the render task reads spinnerFrame, then a
+  // single redraw is requested.
+  //
+  // Each tick is a whole-panel e-ink update, so this loop is the app's dominant
+  // source of panel wear. dial_tick_sec = 0 switches it off completely, which is
+  // what makes a static dashboard leave the panel genuinely idle.
+  if (state == SHOWING && config.dialTickSec > 0) {
     const unsigned long now = millis();
-    if (now - lastSpinnerUpdate >= 1000UL) {
+    const unsigned long tickMs = static_cast<unsigned long>(config.dialTickSec) * 1000UL;
+    if (now - lastSpinnerUpdate >= tickMs) {
       lastSpinnerUpdate = now;
       {
         RenderLock lock(*this);
         spinnerFrame = (spinnerFrame + 1) % 12;
-        if (--dialCleanCountdown <= 0) {
-          dialCleanCountdown = 60;
-          cleanRefreshDue = true;
-        }
       }
       requestUpdate();
     }
@@ -123,34 +106,17 @@ void HttpMonitorActivity::loop() {
   // Manual refresh
   if ((state == SHOWING || state == ERROR) && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     lastPollMs = millis();
+    forceRedraw = true;
     state = FETCHING;
     if (!hasDashboard) requestUpdate(true);
     fetch();
     return;
   }
 
-  // Scroll (Left/Right, only meaningful once a dashboard is showing) and font
-  // size (Up/Down). These must stay on disjoint button sets — Up/Down are
-  // ButtonNavigator's default next/previous buttons too, so onNext()/onPrevious()
-  // would double-bind them to both scrolling and font size.
-  if (state == SHOWING) {
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] {
-      if (scrollOffset > 0) {
-        RenderLock lock(*this);
-        scrollOffset--;
-      }
-      requestUpdate();
-    });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] {
-      {
-        RenderLock lock(*this);
-        scrollOffset++;
-      }
-      requestUpdate();
-    });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustFontSize(+1); });
-    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustFontSize(-1); });
-  }
+  // Left/Right (scroll) and Up/Down (font size) are deliberately unbound. The
+  // server owns both the font size and how much content it sends, so there is
+  // nothing to scroll and nothing to resize on-device; Back and Confirm are the
+  // only inputs this app takes.
 
   // Timed poll
   if (state == SHOWING || state == ERROR) {
@@ -230,6 +196,7 @@ void HttpMonitorActivity::fetch() {
       JsonDocument filter;
       filter["title"] = true;
       filter["updated"] = true;
+      filter["fontSize"] = true;
       filter["sections"][0]["heading"] = true;
       filter["sections"][0]["rows"][0]["type"] = true;
       filter["sections"][0]["rows"][0]["label"] = true;
@@ -267,31 +234,60 @@ void HttpMonitorActivity::fetch() {
 
   http.end();
 
+  // Only touch the panel if what the user would see actually differs from what is
+  // already on it. A dashboard whose values are stable used to repaint — and so
+  // flash — on every single poll; now a static dashboard leaves the panel idle.
+  //
+  // The comparison must be against what is DISPLAYED, not against `state`: at this
+  // point `state` is always FETCHING (fetch() is only ever called after setting
+  // it), and a background poll deliberately leaves the previous dashboard on
+  // screen. `displayedState` tracks what was last actually pushed, which is what
+  // makes the error -> same-dashboard transition repaint instead of being skipped
+  // as "unchanged".
+  bool contentChanged = false;
+  const bool dashboardIsNew = ok && displayedState != SHOWING;
   {
     RenderLock lock(*this);
-    httpStatusCode = code;
     if (ok) {
+      contentChanged = (displayedState != SHOWING) || (dashboard != next);
       dashboard = next;
       state = SHOWING;
-      scrollOffset = 0;
       hasDashboard = true;
     } else {
+      contentChanged = (displayedState != ERROR) || (fetchError != errMsg) || (httpStatusCode != code);
       fetchError = errMsg;
       state = ERROR;
     }
-    // Advance the clean-refresh cadence on every completed poll, not just a
-    // successful one — a persistent ERROR screen (server down) polls just as
-    // often as SHOWING does, and without this the ghosting-clear cadence never
-    // fires until a fetch finally succeeds, letting ghosting accumulate behind
-    // the error text indefinitely.
-    if (config.fullRefreshEvery > 0) {
-      if (--framesUntilClean <= 0) {
-        cleanRefreshDue = true;
-        framesUntilClean = config.fullRefreshEvery;
+    httpStatusCode = code;
+    if (forceRedraw) {
+      contentChanged = true;
+      forceRedraw = false;
+    }
+
+    // Advance the clean-refresh cadence only on polls that actually redraw, not
+    // on every completed poll. Ghosting is caused by updates, so a dashboard that
+    // has been sitting still has nothing to clean — counting idle polls here would
+    // fire a full-screen flash on a panel that had not been touched since the last
+    // one. A persistent ERROR screen still counts, because it does redraw when the
+    // status or message changes.
+    if (contentChanged) {
+      displayedState = state;
+      if (config.fullRefreshEvery > 0) {
+        if (--pollsUntilClean <= 0) {
+          cleanRefreshDue = true;
+          pollsUntilClean = config.fullRefreshEvery;
+        }
       }
     }
   }
-  requestUpdate();
+  // Restart the dial's clock from the moment the dashboard first appears.
+  // lastSpinnerUpdate starts at 0, so without this the very first loop() after a
+  // fetch slower than dial_tick_sec sees an already-elapsed interval and ticks
+  // immediately — a second whole-panel update right on top of the one that just
+  // drew the dashboard. Only loop() touches this, so it needs no RenderLock.
+  if (dashboardIsNew) lastSpinnerUpdate = millis();
+
+  if (contentChanged) requestUpdate();
 }
 
 // ----------------------------------------------------------------
@@ -303,12 +299,21 @@ void HttpMonitorActivity::fetch() {
 // setupDisplayAndFonts(), which registers just BOOKERLY_14, UI_10, UI_12 and
 // SMALL under OMIT_FONTS. Index 2 (UI_12) is the default and matches the size
 // the dashboard has always rendered at.
+int HttpMonitorActivity::dashboardFontSizeIndex() const {
+  // The server owns the font size. `fontSize` is already clamped to 0..3 by the
+  // schema walk, and is SIZE_INHERIT when the server didn't send one — in which
+  // case monitor.conf's font_size (clamped by the config parser) is the fallback,
+  // so servers that don't know about the field keep working unchanged.
+  if (dashboard.fontSize != SIZE_INHERIT) return static_cast<int>(dashboard.fontSize);
+  return config.fontSize;
+}
+
 int HttpMonitorActivity::dashboardFontId() const {
   static constexpr int kFontLadder[] = {SMALL_FONT_ID, UI_10_FONT_ID, UI_12_FONT_ID, BOOKERLY_14_FONT_ID};
   static constexpr int kLadderSize = static_cast<int>(sizeof(kFontLadder) / sizeof(kFontLadder[0]));
 
-  const int idx =
-      (fontSizeIndex >= 0 && fontSizeIndex < kLadderSize) ? fontSizeIndex : HttpMonitorConfig::DEFAULT_FONT_SIZE;
+  const int requested = dashboardFontSizeIndex();
+  const int idx = (requested >= 0 && requested < kLadderSize) ? requested : HttpMonitorConfig::DEFAULT_FONT_SIZE;
   const int candidate = kFontLadder[idx];
   // A missing font renders blank (GfxRenderer returns width/lineheight 0 for an
   // unregistered id), so fall back to UI_12 — always present — rather than
@@ -319,9 +324,9 @@ int HttpMonitorActivity::dashboardFontId() const {
 }
 
 // Per-row font override: a `size` field on the row picks a ladder entry directly;
-// SIZE_INHERIT (the common case) defers to the dashboard-wide font the user
-// scaled with Up/Down. Same validation as dashboardFontId() — unregistered
-// candidates (a -DOMIT_FONTS build) fall back to UI_12.
+// SIZE_INHERIT (the common case) defers to the dashboard-wide font. Same
+// validation as dashboardFontId() — unregistered candidates (a -DOMIT_FONTS
+// build) fall back to UI_12.
 int HttpMonitorActivity::fontForSize(uint8_t sizeIdx) const {
   if (sizeIdx != SIZE_INHERIT) {
     static constexpr int kFontLadder[] = {SMALL_FONT_ID, UI_10_FONT_ID, UI_12_FONT_ID, BOOKERLY_14_FONT_ID};
@@ -333,21 +338,6 @@ int HttpMonitorActivity::fontForSize(uint8_t sizeIdx) const {
   }
   return dashboardFontId();
 }
-
-void HttpMonitorActivity::adjustFontSize(int delta) {
-  const int next = fontSizeIndex + delta;
-  if (next < HttpMonitorConfig::MIN_FONT_SIZE || next > HttpMonitorConfig::MAX_FONT_SIZE || next == fontSizeIndex) {
-    return;
-  }
-  {
-    RenderLock lock(*this);
-    fontSizeIndex = next;
-  }
-  saveFontSize();
-  requestUpdate();
-}
-
-void HttpMonitorActivity::saveFontSize() { Storage.writeFile(FONT_STATE_PATH, String(fontSizeIndex)); }
 
 // ----------------------------------------------------------------
 // Render
@@ -372,9 +362,16 @@ void HttpMonitorActivity::render(RenderLock&&) {
       break;
   }
 
+  // The periodic de-ghost pass must be a FULL_REFRESH, not a HALF_REFRESH. The X3
+  // branch of EInkDisplay::displayBuffer() computes `fastMode = (mode !=
+  // FULL_REFRESH)`, so a HALF_REFRESH there takes the fast *differential* path —
+  // identical to a normal update — and the documented "deeper clean refresh" never
+  // actually happened on X3. FULL_REFRESH is the only mode that clears ghosting on
+  // both panels. It is also the visible flash, which is why it is gated behind the
+  // full_refresh_every cadence and only counts polls that redrew.
   if (config.fullRefreshEvery > 0 && cleanRefreshDue) {
     cleanRefreshDue = false;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
   } else {
     renderer.displayBuffer();
   }
@@ -517,18 +514,16 @@ void HttpMonitorActivity::renderDashboard() {
   // ---- Content band ----
   const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int contentWidth = pageWidth - 2 * metrics.contentSidePadding;
-  const int unreservedContentTop = headerY + headerH + metrics.verticalSpacing;
+  const int contentTop = headerY + headerH + metrics.verticalSpacing;
   static constexpr int BAR_GAP = 10;
-  const int smallLineH = renderer.getLineHeight(SMALL_FONT_ID) + 4;
 
   const int rowFontGlobal = dashboardFontId();
   const int rowLineHGlobal = renderer.getLineHeight(rowFontGlobal) + 6;
 
-  // ---- Build the per-entry scroll list. Each entry is one heading, one row, or
-  // one alert line; heights vary (per-row font size, wrapped text, spacers,
-  // dividers, glyph bands), so the scroll model is a prefix sum over
-  // entryHeights[] (HttpMonitorLayout::entryY / computeScrollMetrics), not the
-  // old uniform-pitch line model.
+  // ---- Build the per-entry list. Each entry is one heading, one row, or one
+  // alert line; heights vary (per-row font size, wrapped text, spacers, dividers,
+  // glyph bands), so placement is a prefix sum over entryHeights[]
+  // (HttpMonitorLayout::entryY), not a uniform-pitch line model.
   static constexpr int MAX_ENTRIES = HttpMonitorSchema::MAX_SECTIONS * (1 + HttpMonitorSchema::MAX_ROWS_PER_SECTION) +
                                      1 + HttpMonitorSchema::MAX_ALERTS;
   struct RenderEntry {
@@ -588,18 +583,12 @@ void HttpMonitorActivity::renderDashboard() {
     }
   }
 
-  // ---- Scroll metrics (per-entry). The scroll indicator reserves its own SMALL
-  // row at the top so it can never sit on top of a row's right-aligned value.
-  auto unreservedScroll =
-      HttpMonitorLayout::computeScrollMetrics(entryHeights, entryCount, unreservedContentTop, contentBottom);
-  const bool needsScrollIndicator = unreservedScroll.maxScroll > 0;
-  const int contentTop = needsScrollIndicator ? (unreservedContentTop + smallLineH) : unreservedContentTop;
-
-  const auto scrollMetrics =
-      HttpMonitorLayout::computeScrollMetrics(entryHeights, entryCount, contentTop, contentBottom);
-  const int visibleEntries = scrollMetrics.visibleEntries;
-  const int maxScroll = scrollMetrics.maxScroll;
-  scrollOffset = HttpMonitorLayout::clampScrollOffset(scrollOffset, maxScroll);
+  // ---- How much of the list fits. The dashboard does not scroll: the server owns
+  // the font size and the amount of content, so whatever does not fit is clipped.
+  const int visibleEntries = HttpMonitorLayout::visibleEntryCount(entryHeights, entryCount, contentTop, contentBottom);
+  if (visibleEntries < entryCount) {
+    LOG_INF("HTTPMON", "Content does not fit: %d of %d entries drawn", visibleEntries, entryCount);
+  }
 
   // ---- Drawing helpers ----
   // The bar. Drawn directly (not GUI.drawProgressBar(), which paints an unwanted
@@ -864,18 +853,9 @@ void HttpMonitorActivity::renderDashboard() {
   };
 
   // ---- Draw the visible entries ----
-  for (int k = 0; k < visibleEntries; ++k) {
-    const int i = scrollOffset + k;
-    if (i >= entryCount)
-      break;  // scrollOffset+visibleEntries can pass the end
-              // when maxScroll = entryCount-1 (single tall
-              // trailing row) — never index past the list.
-    const int y = HttpMonitorLayout::entryY(entryHeights, scrollOffset, i, contentTop);
+  for (int i = 0; i < visibleEntries; ++i) {
+    const int y = HttpMonitorLayout::entryY(entryHeights, i, contentTop);
     const RenderEntry& e = entries[i];
-    // Safety net: never paint a row past the content band. Only reachable with
-    // mixed-height lists where a scrolled-to tall row overflows — visibleEntries
-    // (the leading-entry count) can't know that a later row is taller.
-    if (y + entryHeights[i] > contentBottom) break;
     if (e.row != nullptr) {
       dispatchRow(*e.row, y);
     } else if (e.isHeading) {
@@ -895,20 +875,6 @@ void HttpMonitorActivity::renderDashboard() {
     renderer.drawCenteredText(UI_10_FONT_ID, (contentTop + contentBottom) / 2, "No data");
   }
 
-  if (needsScrollIndicator) {
-    char scrollBuf[16];
-    const int pageSize = (visibleEntries > 0) ? visibleEntries : 1;
-    const int totalPages = HttpMonitorLayout::computeTotalPages(entryCount, pageSize);
-    snprintf(scrollBuf, sizeof(scrollBuf), "%d/%d", scrollOffset / pageSize + 1, totalPages);
-    const int w = renderer.getTextWidth(SMALL_FONT_ID, scrollBuf);
-    // Drawn in the row reserved above unreservedContentTop — never on top of a
-    // row's own content.
-    renderer.drawText(SMALL_FONT_ID, pageWidth - metrics.contentSidePadding - w, unreservedContentTop, scrollBuf);
-  }
-
-  // mapLabels() only labels the four FRONT buttons (Back/Confirm/Left/Right) —
-  // the side Up/Down buttons (now font size) aren't covered here; that mapping
-  // is documented in docs/http-monitor.md instead.
-  const auto labels = mappedInput.mapLabels("Back", "Refresh", "<", ">");
+  const auto labels = mappedInput.mapLabels("Back", "Refresh", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

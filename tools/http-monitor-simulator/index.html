@@ -79,11 +79,12 @@
   #byte-readout { font-size: 12px; margin-top: 4px; }
   #byte-readout.over { color: #b00020; font-weight: 700; }
 
-  #page-ind { font: 12px ui-monospace, Menlo, Consolas, monospace; min-width: 52px; text-align: center; }
   .state-pills { display: flex; flex-wrap: wrap; gap: 4px; }
   .state-pills button { font-size: 11.5px; padding: 3px 8px; }
   .state-pills button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+  #fit-readout.fits { color: #2a7; }
+  #fit-readout.over { color: #c33; font-weight: 600; }
   .font-ladder { display: flex; gap: 4px; }
   .font-ladder button { font-size: 11.5px; padding: 3px 8px; }
   .font-ladder button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -113,7 +114,7 @@
           <option value="x4">X4 · 480×800</option>
           <option value="x3">X3 · 528×792</option>
         </select>
-        <label>Font ladder</label>
+        <label title="monitor.conf font_size — the fallback. A top-level &quot;fontSize&quot; in the JSON overrides it.">Font fallback</label>
         <span class="font-ladder" id="ladder">
           <button data-idx="0">0 SMALL</button>
           <button data-idx="1">1 UI_10</button>
@@ -166,15 +167,9 @@
     </fieldset>
 
     <fieldset>
-      <legend>Scroll <span class="hint">(per-entry, showing state)</span></legend>
+      <legend>Screen fit <span class="hint">(no scrolling — overflow is dropped)</span></legend>
       <div class="row">
-        <button id="scroll-up" title="scroll up">▲ Up</button>
-        <button id="scroll-down" title="scroll down">▼ Down</button>
-        <span id="page-ind">1/1</span>
-      </div>
-      <div class="row">
-        <label>Offset</label>
-        <input type="range" id="scroll-slider" min="0" max="0" value="0" step="1">
+        <span id="fit-readout"></span>
       </div>
     </fieldset>
 
@@ -251,8 +246,15 @@ const LADDER_FONTS = [SMALL, UI_10, UI_12, BOOKERLY_14];
 let device = "x4";
 let pageW = 480, pageH = 800;
 let state = "showing";
-let globalLadder = 2;                     // effective row font when a row has no size override
-let scrollOffset = 0;
+let globalLadder = 2;                     // monitor.conf font_size fallback (used when the server omits fontSize)
+
+// The dashboard-wide font: the server's top-level `fontSize` when it sent one,
+// else the monitor.conf fallback above. Mirrors
+// HttpMonitorActivity::dashboardFontSizeIndex().
+function dashboardLadder() {
+  return (parsed && parsed.fontSize >= 0) ? parsed.fontSize : globalLadder;
+}
+let lastClipped = 0;                      // entries that did not fit on the last render
 let spinnerFrame = 0;
 let spinnerAuto = true;
 let crosshairOn = true;
@@ -284,12 +286,6 @@ function computeBarSpan(contentSidePadding, pageWidth, labelWidth, valueWidth, g
   return { barX, barSpan };
 }
 
-// HttpMonitorLayout::computeTotalPages — ceil division.
-function computeTotalPages(totalLines, pageSize) {
-  if (pageSize <= 0) return 1;
-  return Math.floor((totalLines + pageSize - 1) / pageSize);
-}
-
 // Per-entry scroll (spec §2): entry i's y = contentTop + Σ heights[scroll..i-1].
 function entryY(heights, scroll, i) {
   let y = 0;
@@ -306,7 +302,6 @@ function computeVisibleEntries(heights, contentTop, contentBottom) {
   }
   return n;
 }
-const clampScrollOffset = (o, max) => (o > max ? max : o < 0 ? 0 : o);
 
 /* =====================================================================
  * Text measurement — metrics table only (no ctx.measureText for layout).
@@ -563,7 +558,11 @@ function parseDashboard(jsonText) {
     return String(v).slice(0, cap);
   };
   const normAlign = (a) => (a === "center" || a === "right" ? a : "left");
-  const normSize = (s) => (Number.isInteger(s) ? clamp(s, 0, 3) : -1);   // -1 = inherit ladder
+  // -1 = inherit. Out-of-range values INHERIT rather than clamp, matching
+  // HttpMonitorSchema::apply(): clamping a bogus size would silently pin the row
+  // (or the whole dashboard) to an extreme of the ladder and hide the server's
+  // mistake, which is exactly what this simulator exists to surface.
+  const normSize = (s) => (Number.isInteger(s) && s >= 0 && s <= 3 ? s : -1);
 
   function parseBar(b, rowType) {
     if (b === undefined || b === null || b === false) return null;
@@ -613,24 +612,27 @@ function parseDashboard(jsonText) {
 
   const title = strOf(obj.title, 32);
   const updated = strOf(obj.updated, 32);
+  // Top-level server-driven font size. Out of range / wrong type -> -1 = inherit
+  // the monitor.conf fallback, matching HttpMonitorSchema::apply().
+  const fontSize = normSize(obj.fontSize);
   const alerts = (Array.isArray(obj.alerts) ? obj.alerts : []).slice(0, 4).map((a) => strOf(a, 48));
   const sections = (Array.isArray(obj.sections) ? obj.sections : []).slice(0, 6).map((s) => ({
     heading: strOf(s && s.heading, 24),
     rows: (Array.isArray(s && s.rows) ? s.rows : []).slice(0, 12).map(parseRow),
   }));
-  return { title, updated, sections, alerts };
+  return { title, updated, fontSize, sections, alerts };
 }
 
 /* =====================================================================
  * Entry list for the per-entry scroll model (spec §2). One entry per
  * heading / row / alert, each with its own height.
  * ===================================================================== */
-function effectiveFont(row) { return row.size >= 0 ? row.size : globalLadder; }
+function effectiveFont(row) { return row.size >= 0 ? row.size : dashboardLadder(); }
 
 function buildEntries(dash) {
   const entries = [];
   const contentWidth = pageW - 2 * METRICS.contentSidePadding;
-  const rowFont = LADDER_FONTS[globalLadder];
+  const rowFont = LADDER_FONTS[dashboardLadder()];
 
   for (const sec of dash.sections) {
     if (sec.heading) entries.push({ kind: "heading", text: sec.heading, font: rowFont, bold: true });
@@ -959,7 +961,11 @@ function renderError() {
 }
 
 function renderShowing() {
+  // parsed is null whenever the JSON in the textarea doesn't parse. Without this
+  // guard the first dereference below throws and the canvas silently stops
+  // updating, so a typo mid-edit looks like the simulator has hung.
   const dash = parsed;
+  if (!dash) return;
   const title = dash.title || configTitle;
   drawHeader(title, dash.updated, true);
 
@@ -971,38 +977,26 @@ function renderShowing() {
   const heights = entries.map(entryHeight);
   const entryCount = entries.length;
 
-  // Reserve one SMALL line for the scroll indicator only when scrolling is needed.
-  const unreservedVisible = computeVisibleEntries(heights, unreservedContentTop, contentBottom);
-  const needsScroll = entryCount - unreservedVisible > 0;
-  const small = smallLineH();
-  const contentTop = needsScroll ? unreservedContentTop + small : unreservedContentTop;
-
-  const visibleEntries = computeVisibleEntries(heights, contentTop, contentBottom);
-  const maxScroll = Math.max(0, entryCount - visibleEntries);
-  scrollOffset = clampScrollOffset(scrollOffset, maxScroll);
-
-  // Per-entry scroll: entry i at contentTop + Σ heights[scrollOffset..i-1].
+  // The dashboard does not scroll: entries are drawn from the top until the band
+  // is full and the rest are clipped at a row boundary. `lastClipped` feeds the
+  // over-budget warning in the controls.
+  const contentTop = unreservedContentTop;
   let y = contentTop;
-  for (let i = scrollOffset; i < entryCount; i++) {
+  let drawn = 0;
+  for (let i = 0; i < entryCount; i++) {
     const eh = heights[i];
     if (y + eh > contentBottom) break;
     renderEntry(entries[i], y);
     y += eh;
+    drawn++;
   }
+  lastClipped = entryCount - drawn;
 
   if (entryCount === 0) {
     drawCenteredText(UI_10, Math.floor((contentTop + contentBottom) / 2), "No data");
   }
 
-  if (needsScroll) {
-    const pageSize = Math.max(1, visibleEntries);
-    const totalPages = computeTotalPages(entryCount, pageSize);
-    const curPage = Math.floor(scrollOffset / pageSize) + 1;
-    const s = curPage + "/" + totalPages;
-    drawText(SMALL, pageW - METRICS.contentSidePadding - textWidth(SMALL, s), unreservedContentTop, s);
-  }
-
-  drawButtonHints("Back", "Refresh", "<", ">");
+  drawButtonHints("Back", "Refresh", "", "");
 }
 
 /* =====================================================================
@@ -1100,19 +1094,24 @@ function readJson() {
   render();
 }
 
+// The dashboard does not scroll, so the only thing to report is whether the
+// payload is over budget for the current device + font size. This is the
+// simulator's whole job for fit: content that doesn't fit is dropped on the
+// device with no way for the user to reach it.
 function updateScrollControls() {
-  const entries = parsed ? buildEntries(parsed) : [];
-  const heights = entries.map(entryHeight);
-  const contentBottom = pageH - METRICS.buttonHintsHeight - METRICS.verticalSpacing;
-  const unreserved = METRICS.topPadding + METRICS.headerHeight + METRICS.verticalSpacing;
-  const visible = computeVisibleEntries(heights, unreserved, contentBottom);
-  const maxScroll = Math.max(0, entries.length - visible);
-  const slider = $("scroll-slider");
-  slider.max = String(maxScroll);
-  slider.value = String(clampScrollOffset(scrollOffset, maxScroll));
-  $("scroll-up").disabled = scrollOffset <= 0;
-  $("scroll-down").disabled = scrollOffset >= maxScroll;
-  $("page-ind").textContent = maxScroll === 0 ? "1/1" : (Math.floor(scrollOffset / Math.max(1, visible)) + 1) + "/" + computeTotalPages(entries.length, Math.max(1, visible));
+  const el = $("fit-readout");
+  if (!el) return;
+  const ladder = dashboardLadder();
+  const src = (parsed && parsed.fontSize >= 0) ? "server fontSize" : "monitor.conf font_size";
+  if (!parsed) { el.textContent = ""; el.className = ""; return; }
+  if (lastClipped > 0) {
+    el.textContent = "OVER BUDGET — " + lastClipped + " entr" + (lastClipped === 1 ? "y is" : "ies are") +
+                     " clipped and unreachable (font " + ladder + " via " + src + ")";
+    el.className = "over";
+  } else {
+    el.textContent = "Fits (font " + ladder + " via " + src + ")";
+    el.className = "fits";
+  }
 }
 
 function renderAll() { readJson(); }
@@ -1130,7 +1129,6 @@ $("ladder").addEventListener("click", (e) => {
   if (!b) return;
   globalLadder = +b.dataset.idx;
   document.querySelectorAll("#ladder button").forEach((x) => x.classList.toggle("active", +x.dataset.idx === globalLadder));
-  scrollOffset = 0;
   renderAll();
 });
 
@@ -1165,9 +1163,6 @@ document.querySelectorAll("button[data-sample]").forEach((b) => {
 });
 
 // ---- scroll ----
-$("scroll-up").addEventListener("click", () => { scrollOffset = Math.max(0, scrollOffset - 1); renderAll(); });
-$("scroll-down").addEventListener("click", () => { scrollOffset = scrollOffset + 1; renderAll(); });
-$("scroll-slider").addEventListener("input", (e) => { scrollOffset = +e.target.value; renderAll(); });
 
 // ---- spinner ----
 $("spinner-auto").addEventListener("change", (e) => { spinnerAuto = e.target.checked; });

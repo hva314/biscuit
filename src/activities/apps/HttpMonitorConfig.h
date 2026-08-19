@@ -18,6 +18,14 @@ constexpr int DEFAULT_TIMEOUT_MS = 5000;
 
 constexpr int DEFAULT_FULL_REFRESH_EVERY = 20;
 
+// Liveness-dial tick period, in seconds. The dial is decorative, but every tick
+// costs a whole-panel e-ink update, so the period is a direct multiplier on
+// panel wear: the old hardcoded 1Hz tick meant ~86k updates/day. 0 disables the
+// dial entirely (the `updated` timestamp still shows liveness).
+constexpr int MIN_DIAL_TICK_SEC = 0;
+constexpr int MAX_DIAL_TICK_SEC = 60;
+constexpr int DEFAULT_DIAL_TICK_SEC = 5;
+
 // Index into the dashboard font ladder (see HttpMonitorActivity::dashboardFontId).
 // 0 = smallest, 3 = largest; 2 (UI_12) matches the size the dashboard has always
 // used, so it's the default that keeps today's look unchanged.
@@ -30,9 +38,10 @@ struct Config {
   int intervalSec = DEFAULT_INTERVAL_SEC;
   int timeoutMs = DEFAULT_TIMEOUT_MS;
   int fullRefreshEvery = DEFAULT_FULL_REFRESH_EVERY;  // 0 disables periodic full refresh
+  int dialTickSec = DEFAULT_DIAL_TICK_SEC;            // 0 disables the liveness dial
   std::string title = "HTTP Monitor";
   std::string authHeader;            // optional, sent verbatim as an HTTP header, e.g. "Authorization: Bearer abc123"
-  int fontSize = DEFAULT_FONT_SIZE;  // initial dashboard font size; overridden at runtime by the sidecar file
+  int fontSize = DEFAULT_FONT_SIZE;  // fallback dashboard font size, used only when the server omits `fontSize`
 };
 
 // Pure parser: parses the full contents of a monitor.conf file (`text`) into `out`.

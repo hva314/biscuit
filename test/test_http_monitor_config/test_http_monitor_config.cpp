@@ -164,6 +164,37 @@ void test_unknown_keys_ignored() {
 
 // ---- numeric clamps ----
 
+void test_dial_tick_sec_defaults_to_5() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\n", cfg, err);
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::DEFAULT_DIAL_TICK_SEC, cfg.dialTickSec);
+}
+
+void test_dial_tick_sec_zero_disables_the_dial() {
+  // 0 is a meaningful value, not a "missing" one: it switches the liveness dial
+  // off entirely, which is what lets a static dashboard leave the e-ink panel
+  // completely idle between polls. It must survive the clamp.
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=0\n", cfg, err);
+  TEST_ASSERT_EQUAL(0, cfg.dialTickSec);
+}
+
+void test_dial_tick_sec_clamped_low() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=-9\n", cfg, err);
+  TEST_ASSERT_EQUAL(0, cfg.dialTickSec);
+}
+
+void test_dial_tick_sec_clamped_high() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=99999\n", cfg, err);
+  TEST_ASSERT_EQUAL(60, cfg.dialTickSec);
+}
+
 void test_interval_sec_clamped_low() {
   Config cfg;
   std::string err;
@@ -298,6 +329,10 @@ int main() {
   RUN_TEST(test_auth_header_length_is_bounded);
   RUN_TEST(test_blank_lines_ignored);
   RUN_TEST(test_unknown_keys_ignored);
+  RUN_TEST(test_dial_tick_sec_defaults_to_5);
+  RUN_TEST(test_dial_tick_sec_zero_disables_the_dial);
+  RUN_TEST(test_dial_tick_sec_clamped_low);
+  RUN_TEST(test_dial_tick_sec_clamped_high);
   RUN_TEST(test_interval_sec_clamped_low);
   RUN_TEST(test_interval_sec_clamped_high);
   RUN_TEST(test_timeout_ms_clamped_low);

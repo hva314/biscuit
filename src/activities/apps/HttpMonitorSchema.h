@@ -73,9 +73,48 @@ struct Section {
 struct Dashboard {
   char title[32] = {};
   char updated[32] = {};
+  // Server-driven dashboard font size (ladder index 0..3). SIZE_INHERIT means
+  // the server omitted it, in which case the activity falls back to
+  // monitor.conf's `font_size`. Rows may still override per-row via `size`.
+  uint8_t fontSize = SIZE_INHERIT;
   std::vector<Section> sections;
   std::vector<std::array<char, 48>> alerts;
 };
+
+// ---- Equality ----
+// HttpMonitorActivity compares a freshly parsed Dashboard against the one on
+// screen and skips the e-ink update entirely when they match. That comparison is
+// the whole point: a monitor whose values are stable must not repaint (and so
+// must not flash) on every poll. Every field that renderDashboard() draws has to
+// participate, or a real change would be missed and the screen would go stale.
+//
+// The char arrays are safe to strcmp: copyBounded() always null-terminates, and
+// both Row and Dashboard value-initialize their buffers.
+
+inline bool operator==(const BarSpec& a, const BarSpec& b) {
+  return a.value == b.value && a.segments == b.segments && a.widthPct == b.widthPct && a.align == b.align &&
+         a.fullWidth == b.fullWidth;
+}
+inline bool operator!=(const BarSpec& a, const BarSpec& b) { return !(a == b); }
+
+inline bool operator==(const Row& a, const Row& b) {
+  return a.type == b.type && a.align == b.align && a.sizeIdx == b.sizeIdx && a.flags == b.flags &&
+         a.spacerHeight == b.spacerHeight && a.dividerInset == b.dividerInset &&
+         a.dividerLineWidth == b.dividerLineWidth && a.bar == b.bar && strcmp(a.label, b.label) == 0 &&
+         strcmp(a.value, b.value) == 0 && strcmp(a.text, b.text) == 0 && strcmp(a.glyphs, b.glyphs) == 0;
+}
+inline bool operator!=(const Row& a, const Row& b) { return !(a == b); }
+
+inline bool operator==(const Section& a, const Section& b) {
+  return strcmp(a.heading, b.heading) == 0 && a.rows == b.rows;
+}
+inline bool operator!=(const Section& a, const Section& b) { return !(a == b); }
+
+inline bool operator==(const Dashboard& a, const Dashboard& b) {
+  return a.fontSize == b.fontSize && strcmp(a.title, b.title) == 0 && strcmp(a.updated, b.updated) == 0 &&
+         a.sections == b.sections && a.alerts == b.alerts;
+}
+inline bool operator!=(const Dashboard& a, const Dashboard& b) { return !(a == b); }
 
 // Null-terminated copy into a fixed buffer, truncating (not overflowing) if needed.
 inline void copyBounded(char* dst, size_t dstSize, const char* src) {
@@ -171,6 +210,12 @@ inline void apply(const JsonDocument& doc, Dashboard& next, const char* defaultT
 
   copyBounded(next.title, sizeof(next.title), doc["title"] | (defaultTitle ? defaultTitle : ""));
   copyBounded(next.updated, sizeof(next.updated), doc["updated"] | "");
+
+  // Top-level font size: same 0..3 ladder as a row's `size`. Anything else
+  // (absent, wrong type, out of range) leaves SIZE_INHERIT so the activity keeps
+  // using monitor.conf's font_size -- existing servers stay unaffected.
+  const int fontRaw = doc["fontSize"] | -1;
+  next.fontSize = (fontRaw >= 0 && fontRaw <= 3) ? static_cast<uint8_t>(fontRaw) : SIZE_INHERIT;
 
   if (doc["alerts"].is<JsonArrayConst>()) {
     for (JsonVariantConst a : doc["alerts"].as<JsonArrayConst>()) {

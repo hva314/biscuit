@@ -511,14 +511,14 @@ static HttpMonitorPreviewRow glyphsRow(const char* glyphs, const char* label = n
 
 // Exercises the SAME pure layout math as HttpMonitorActivity::renderDashboard()
 // via HttpMonitorLayout.h — column allocation, fractional-bar placement, per-entry
-// mixed heights, and maxScroll are computed by the shared functions, not a
-// hand-copy. Only the drawing primitives are mock-specific (drawRect/fillRect,
+// mixed heights, and the visible-entry count are computed by the shared functions,
+// not a hand-copy. Only the drawing primitives are mock-specific (drawRect/fillRect,
 // scanline approximations of drawArc/fillPolygon). The dispatch switch casts each
 // row's `type` to HttpMonitorSchema::RowType, so the preview can't drift from the
-// schema values the firmware dispatches on. Returns the clamped maxScroll so
-// callers can drive a "scrolled to bottom" preview and prove scrolling works.
+// schema values the firmware dispatches on. Returns the number of entries that did
+// NOT fit, so callers can assert on clipping (the dashboard does not scroll).
 static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<HttpMonitorPreviewSection>& sections,
-                                             const char* title, int scrollOffset, const char* updated = nullptr,
+                                             const char* title, const char* updated = nullptr,
                                              const std::vector<const char*>& alerts = {}) {
   const int pageWidth = r.getScreenWidth();
   const int pageHeight = r.getScreenHeight();
@@ -607,17 +607,9 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
   }
   const int entryCount = static_cast<int>(entryHeights.size());
 
-  const auto unreservedScroll =
-      HttpMonitorLayout::computeScrollMetrics(entryHeights.data(), entryCount, unreservedContentTop, contentBottom);
-  const bool needsScrollIndicator = unreservedScroll.maxScroll > 0;
-  const int smallLineH = r.getLineHeight(SMALL_FONT_ID) + 4;
-  const int contentTop = needsScrollIndicator ? (unreservedContentTop + smallLineH) : unreservedContentTop;
-
-  const auto scrollMetrics =
-      HttpMonitorLayout::computeScrollMetrics(entryHeights.data(), entryCount, contentTop, contentBottom);
-  const int visibleEntries = scrollMetrics.visibleEntries;
-  const int maxScroll = scrollMetrics.maxScroll;
-  scrollOffset = HttpMonitorLayout::clampScrollOffset(scrollOffset, maxScroll);
+  const int contentTop = unreservedContentTop;
+  const int visibleEntries =
+      HttpMonitorLayout::visibleEntryCount(entryHeights.data(), entryCount, contentTop, contentBottom);
 
   // ---- drawing lambdas (mock-adapted; geometry mirrors HttpMonitorActivity) ----
 
@@ -851,15 +843,9 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
     }
   };
 
-  // ---- draw loop: only entries that fully fit the band. ----
-  for (int k = 0; k < visibleEntries; ++k) {
-    const int i = scrollOffset + k;
-    if (i >= entryCount)
-      break;  // scrollOffset+visibleEntries can pass the end
-              // when maxScroll = entryCount-1 — never index
-              // past the entry list.
-    const int y = HttpMonitorLayout::entryY(entryHeights.data(), scrollOffset, i, contentTop);
-    if (y + entryHeights[i] > contentBottom) break;
+  // ---- draw loop: only entries that fully fit the band; the rest are clipped. ----
+  for (int i = 0; i < visibleEntries; ++i) {
+    const int y = HttpMonitorLayout::entryY(entryHeights.data(), i, contentTop);
     const PreviewEntry& e = entries[i];
     if (e.kind == EntryKind::HEADING) {
       r.drawText(rowFontGlobal, sidePadding, y, e.text, true, 1 /* BOLD */);
@@ -875,17 +861,8 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
     r.drawCenteredText(UI_10_FONT_ID, (contentTop + contentBottom) / 2, "No data");
   }
 
-  if (needsScrollIndicator) {
-    char scrollBuf[16];
-    const int pageSize = (visibleEntries > 0) ? visibleEntries : 1;
-    const int totalPages = HttpMonitorLayout::computeTotalPages(entryCount, pageSize);
-    snprintf(scrollBuf, sizeof(scrollBuf), "%d/%d", scrollOffset / pageSize + 1, totalPages);
-    const int w = r.getTextWidth(SMALL_FONT_ID, scrollBuf);
-    r.drawText(SMALL_FONT_ID, pageWidth - sidePadding - w, unreservedContentTop, scrollBuf);
-  }
-
-  drawButtonHintsOn(r, "Back", "Refresh", "Up", "Down");
-  return maxScroll;
+  drawButtonHintsOn(r, "Back", "Refresh", "", "");
+  return entryCount - visibleEntries;
 }
 
 static void renderHttpMonitorDashboard(GfxRenderer& r) {
@@ -893,7 +870,7 @@ static void renderHttpMonitorDashboard(GfxRenderer& r) {
       {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}}},
       {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}}},
   };
-  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", 0, "12:01:02");
+  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", "12:01:02");
 }
 
 static void renderHttpMonitorError(GfxRenderer& r) {
@@ -969,8 +946,8 @@ void render_httpmonitor_dashboard_x3() {
 // Dense-budget preview: exactly the "≤ 12 rows + ≤ 4 headings" no-scroll target
 // documented in docs/http-monitor-server-api.md, at the X3 geometry (528x792) —
 // the tighter of the two panels (shorter, and Lyra-style headers cut it further).
-// Rendered twice: at rest (top) and scrolled to the computed maxScroll (bottom),
-// to prove the entry-based scroll bookkeeping neither clips nor gets stuck.
+// Nothing may be clipped at this budget — the dashboard does not scroll, so
+// "fits" is the whole guarantee.
 static std::vector<HttpMonitorPreviewSection> denseHttpMonitorSections() {
   return {
       {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}, {"Load", "1.24", -1, false}}},
@@ -983,20 +960,20 @@ static std::vector<HttpMonitorPreviewSection> denseHttpMonitorSections() {
 
 void render_httpmonitor_dense_x3_top() {
   GfxRenderer r(528, 792);
-  // The documented ≤12-row + ≤4-heading budget must fit on the tighter X3 panel
-  // with NO scrolling required — that's the guarantee docs/http-monitor-server-api.md
-  // makes to server authors. maxScroll == 0 is the proof; a positive value here
-  // would mean the doc's promise is false.
-  const int maxScroll = renderHttpMonitorDashboardGeneric(r, denseHttpMonitorSections(), "prod-1", 0);
-  TEST_ASSERT_EQUAL(0, maxScroll);
+  // The documented ≤12-row + ≤4-heading budget must fit on the tighter X3 panel.
+  // That's the guarantee docs/http-monitor-server-api.md makes to server authors,
+  // and with scrolling gone it is the only thing standing between an over-budget
+  // response and silently dropped rows. Zero clipped entries is the proof.
+  const int clipped = renderHttpMonitorDashboardGeneric(r, denseHttpMonitorSections(), "prod-1");
+  TEST_ASSERT_EQUAL(0, clipped);
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_dense_x3_top.bmp"));
 }
 
 // Beyond the recommended (but not hard-capped) budget: 6 sections x 4 rows — still
 // inside every hard cap (<=6 sections, <=12 rows/section) but enough content to
-// overflow a single X3 screen, so scrolling has to engage. Rendered twice — at rest
-// and scrolled to the computed maxScroll — to prove the entry-based scroll
-// bookkeeping neither clips nor gets stuck before reaching the final rows.
+// overflow a single X3 screen. With scrolling removed this content is clipped by
+// design; the preview exists to show what an over-budget server response looks
+// like on the panel, and to prove the clip is clean (no partially drawn row).
 static std::vector<HttpMonitorPreviewSection> overflowHttpMonitorSections() {
   return {
       {"System",
@@ -1031,17 +1008,9 @@ static std::vector<HttpMonitorPreviewSection> overflowHttpMonitorSections() {
 
 void render_httpmonitor_overflow_x3_top() {
   GfxRenderer r(528, 792);
-  const int maxScroll = renderHttpMonitorDashboardGeneric(r, overflowHttpMonitorSections(), "prod-1", 0);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  const int clipped = renderHttpMonitorDashboardGeneric(r, overflowHttpMonitorSections(), "prod-1");
+  TEST_ASSERT_GREATER_THAN(0, clipped);
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_overflow_x3_top.bmp"));
-}
-
-void render_httpmonitor_overflow_x3_scrolled() {
-  GfxRenderer r(528, 792);
-  const int maxScroll = renderHttpMonitorDashboardGeneric(r, overflowHttpMonitorSections(), "prod-1", 0);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
-  renderHttpMonitorDashboardGeneric(r, overflowHttpMonitorSections(), "prod-1", maxScroll);
-  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_overflow_x3_scrolled.bmp"));
 }
 
 // Worst case the contract permits: label at the full 24-char cap, value at the
@@ -1055,13 +1024,13 @@ static std::vector<HttpMonitorPreviewSection> worstCaseHttpMonitorSections() {
 
 void render_httpmonitor_worstcase_x4() {
   GfxRenderer r(480, 800);
-  renderHttpMonitorDashboardGeneric(r, worstCaseHttpMonitorSections(), "prod-1", 0);
+  renderHttpMonitorDashboardGeneric(r, worstCaseHttpMonitorSections(), "prod-1");
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_worstcase_x4.bmp"));
 }
 
 void render_httpmonitor_worstcase_x3() {
   GfxRenderer r(528, 792);
-  renderHttpMonitorDashboardGeneric(r, worstCaseHttpMonitorSections(), "prod-1", 0);
+  renderHttpMonitorDashboardGeneric(r, worstCaseHttpMonitorSections(), "prod-1");
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_worstcase_x3.bmp"));
 }
 
@@ -1093,9 +1062,9 @@ void render_httpmonitor_noconfig_x3() {
 // A dashboard that exercises every typed row (text / spacer / divider / glyphs),
 // object-form bars with segments + fractional width + align, a per-row SMALL
 // `size`, an `updated` timestamp, and an alerts section — at both panel
-// geometries, rendered at rest (top) and scrolled to maxScroll (bottom). The
-// mixed heights (wrapped text, 8px spacer, 12px dividers, 20px glyph bands) are
-// exactly what the per-entry scroll model exists for.
+// geometries. The mixed heights (wrapped text, 8px spacer, 12px dividers, 20px
+// glyph bands) are what the per-entry height model exists for: the clip boundary
+// has to land on an entry edge regardless of how uneven the heights are.
 
 static std::vector<HttpMonitorPreviewSection> mixedHttpMonitorSections() {
   std::vector<HttpMonitorPreviewSection> s;
@@ -1141,39 +1110,17 @@ static std::vector<HttpMonitorPreviewSection> mixedHttpMonitorSections() {
 void render_httpmonitor_mixed_x4_top() {
   GfxRenderer r(480, 800);
   const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
-  const int maxScroll =
-      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  const int clipped = renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, clipped);
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x4_top.bmp"));
-}
-
-void render_httpmonitor_mixed_x4_scrolled() {
-  GfxRenderer r(480, 800);
-  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
-  const int maxScroll =
-      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
-  renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", maxScroll, "12:01:02", alerts);
-  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x4_scrolled.bmp"));
 }
 
 void render_httpmonitor_mixed_x3_top() {
   GfxRenderer r(528, 792);
   const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
-  const int maxScroll =
-      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
+  const int clipped = renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", "12:01:02", alerts);
+  TEST_ASSERT_GREATER_THAN(0, clipped);
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x3_top.bmp"));
-}
-
-void render_httpmonitor_mixed_x3_scrolled() {
-  GfxRenderer r(528, 792);
-  const std::vector<const char*> alerts = {"eth0: link down for 2m", "swap below 5% free"};
-  const int maxScroll =
-      renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", 0, "12:01:02", alerts);
-  TEST_ASSERT_GREATER_THAN(0, maxScroll);
-  renderHttpMonitorDashboardGeneric(r, mixedHttpMonitorSections(), "prod-1", maxScroll, "12:01:02", alerts);
-  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_mixed_x3_scrolled.bmp"));
 }
 
 // ============================================================
@@ -1218,7 +1165,6 @@ int main() {
   RUN_TEST(render_httpmonitor_dashboard_x3);
   RUN_TEST(render_httpmonitor_dense_x3_top);
   RUN_TEST(render_httpmonitor_overflow_x3_top);
-  RUN_TEST(render_httpmonitor_overflow_x3_scrolled);
   RUN_TEST(render_httpmonitor_worstcase_x4);
   RUN_TEST(render_httpmonitor_worstcase_x3);
   RUN_TEST(render_httpmonitor_error_x4);
@@ -1226,8 +1172,6 @@ int main() {
   RUN_TEST(render_httpmonitor_noconfig_x4);
   RUN_TEST(render_httpmonitor_noconfig_x3);
   RUN_TEST(render_httpmonitor_mixed_x4_top);
-  RUN_TEST(render_httpmonitor_mixed_x4_scrolled);
   RUN_TEST(render_httpmonitor_mixed_x3_top);
-  RUN_TEST(render_httpmonitor_mixed_x3_scrolled);
   return UNITY_END();
 }

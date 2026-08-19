@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 
 #include "../../src/activities/apps/HttpMonitorSchema.h"
@@ -238,6 +239,122 @@ void test_divider_inset_linewidth_label() {
   TEST_ASSERT_EQUAL(2, firstRow(d2).dividerLineWidth);
 }
 
+// ---- server-driven dashboard font size ----
+
+void test_font_size_absent_inherits() {
+  // No fontSize from the server -> SIZE_INHERIT, which is what makes the
+  // activity fall back to monitor.conf's font_size. Servers that predate the
+  // field must keep working, so this is the compatibility guarantee.
+  const Dashboard d = parse(R"({"sections":[]})");
+  TEST_ASSERT_EQUAL((int)SIZE_INHERIT, (int)d.fontSize);
+}
+
+void test_font_size_in_range_is_taken() {
+  for (int i = 0; i <= 3; i++) {
+    char json[64];
+    snprintf(json, sizeof(json), R"({"fontSize":%d,"sections":[]})", i);
+    TEST_ASSERT_EQUAL(i, (int)parse(json).fontSize);
+  }
+}
+
+void test_font_size_out_of_range_inherits() {
+  // Out of the 0..3 ladder, or the wrong type entirely -> inherit rather than
+  // clamp. Clamping a bogus value would silently pin the whole dashboard to the
+  // smallest or largest font and hide the server's mistake.
+  TEST_ASSERT_EQUAL((int)SIZE_INHERIT, (int)parse(R"({"fontSize":4,"sections":[]})").fontSize);
+  TEST_ASSERT_EQUAL((int)SIZE_INHERIT, (int)parse(R"({"fontSize":-1,"sections":[]})").fontSize);
+  TEST_ASSERT_EQUAL((int)SIZE_INHERIT, (int)parse(R"({"fontSize":"big","sections":[]})").fontSize);
+  TEST_ASSERT_EQUAL((int)SIZE_INHERIT, (int)parse(R"({"fontSize":null,"sections":[]})").fontSize);
+}
+
+void test_font_size_is_independent_of_row_size() {
+  // A per-row `size` override must not disturb the dashboard-wide value.
+  const Dashboard d = parse(R"({"fontSize":1,"sections":[{"rows":[{"label":"a","size":3}]}]})");
+  TEST_ASSERT_EQUAL(1, (int)d.fontSize);
+  TEST_ASSERT_EQUAL(3, (int)firstRow(d).sizeIdx);
+}
+
+// ---- Dashboard equality (drives the skip-the-e-ink-update decision) ----
+//
+// If these comparisons are wrong the app either flashes on every poll (false
+// negative) or goes permanently stale (false positive). The stale case is the
+// dangerous one, so every drawn field gets an explicit "this counts as a change"
+// assertion.
+
+void test_identical_payloads_compare_equal() {
+  const char* json = R"({"title":"prod","updated":"12:01","fontSize":2,
+    "sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],
+    "alerts":["disk full"]})";
+  TEST_ASSERT_TRUE(parse(json) == parse(json));
+  TEST_ASSERT_FALSE(parse(json) != parse(json));
+}
+
+void test_every_drawn_field_counts_as_a_change() {
+  const char* base = R"({"title":"prod","updated":"12:01","fontSize":2,
+    "sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],
+    "alerts":["disk full"]})";
+  const Dashboard b = parse(base);
+
+  // Each of these differs from `base` in exactly one rendered field.
+  const char* mutations[] = {
+      R"({"title":"stage","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:02","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":3,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Net","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"MEM","value":"23%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"24%","bar":40}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":41}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40,"bold":true}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40,"align":"right"}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40,"size":0}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":["disk ok"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40}]}],"alerts":[]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[{"heading":"Sys","rows":[{"label":"CPU","value":"23%","bar":40},{"label":"X","value":"1"}]}],"alerts":["disk full"]})",
+      R"({"title":"prod","updated":"12:01","fontSize":2,"sections":[],"alerts":["disk full"]})",
+  };
+  for (size_t i = 0; i < sizeof(mutations) / sizeof(mutations[0]); i++) {
+    if (b == parse(mutations[i])) {
+      char msg[96];
+      snprintf(msg, sizeof(msg), "mutation %d compared equal to base", (int)i);
+      TEST_FAIL_MESSAGE(msg);
+    }
+  }
+}
+
+void test_typed_row_params_count_as_a_change() {
+  // spacer height, divider inset/lineWidth and glyphs are drawn but are not part
+  // of the label/value pair, so they need their own coverage.
+  const char* spacer10 = R"({"sections":[{"rows":[{"type":"spacer","height":10}]}]})";
+  const char* spacer20 = R"({"sections":[{"rows":[{"type":"spacer","height":20}]}]})";
+  TEST_ASSERT_TRUE(parse(spacer10) != parse(spacer20));
+
+  const char* div0 = R"({"sections":[{"rows":[{"type":"divider","inset":0,"lineWidth":1}]}]})";
+  const char* div8 = R"({"sections":[{"rows":[{"type":"divider","inset":8,"lineWidth":1}]}]})";
+  const char* div2w = R"({"sections":[{"rows":[{"type":"divider","inset":0,"lineWidth":2}]}]})";
+  TEST_ASSERT_TRUE(parse(div0) != parse(div8));
+  TEST_ASSERT_TRUE(parse(div0) != parse(div2w));
+
+  const char* g1 = R"({"sections":[{"rows":[{"type":"glyphs","glyphs":["#","o"]}]}]})";
+  const char* g2 = R"({"sections":[{"rows":[{"type":"glyphs","glyphs":["#","x"]}]}]})";
+  TEST_ASSERT_TRUE(parse(g1) != parse(g2));
+
+  // Bar object fields beyond `value`.
+  const char* b1 = R"({"sections":[{"rows":[{"label":"a","bar":{"value":50,"segments":4}}]}]})";
+  const char* b2 = R"({"sections":[{"rows":[{"label":"a","bar":{"value":50,"segments":8}}]}]})";
+  const char* b3 = R"({"sections":[{"rows":[{"label":"a","bar":{"value":50,"segments":4,"width":0.5}}]}]})";
+  TEST_ASSERT_TRUE(parse(b1) != parse(b2));
+  TEST_ASSERT_TRUE(parse(b1) != parse(b3));
+}
+
+void test_truncated_fields_that_render_identically_compare_equal() {
+  // Two labels that differ only past the truncation cap draw the same pixels, so
+  // they must compare equal — otherwise a server with a long, slightly-varying
+  // label would repaint forever with no visible difference.
+  const char* a = R"({"sections":[{"rows":[{"label":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"}]}]})";
+  const char* b = R"({"sections":[{"rows":[{"label":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2"}]}]})";
+  TEST_ASSERT_TRUE(parse(a) == parse(b));
+}
+
 // ============================================================
 void setUp() {}
 void tearDown() {}
@@ -263,5 +380,13 @@ int main() {
   RUN_TEST(test_text_row_parses_text);
   RUN_TEST(test_spacer_height_clamped_2_to_60);
   RUN_TEST(test_divider_inset_linewidth_label);
+  RUN_TEST(test_font_size_absent_inherits);
+  RUN_TEST(test_font_size_in_range_is_taken);
+  RUN_TEST(test_font_size_out_of_range_inherits);
+  RUN_TEST(test_font_size_is_independent_of_row_size);
+  RUN_TEST(test_identical_payloads_compare_equal);
+  RUN_TEST(test_every_drawn_field_counts_as_a_change);
+  RUN_TEST(test_typed_row_params_count_as_a_change);
+  RUN_TEST(test_truncated_fields_that_render_identically_compare_equal);
   return UNITY_END();
 }

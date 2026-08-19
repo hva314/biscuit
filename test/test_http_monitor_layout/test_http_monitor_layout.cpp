@@ -86,19 +86,6 @@ void test_fractional_bar_full_width_ignores_align() {
   TEST_ASSERT_EQUAL(300, b.barSpan);
 }
 
-// ---- computeTotalLines ----
-
-void test_total_lines_sums_headings_and_rows() {
-  TEST_ASSERT_EQUAL(6, computeTotalLines(/*headingCount=*/2, /*rowCount=*/4, /*alertCount=*/0));
-}
-
-void test_total_lines_adds_alerts_heading_plus_each_alert() {
-  // 2 headings + 4 rows + ("Alerts" heading + 3 alert lines) = 6 + 4 = 10
-  TEST_ASSERT_EQUAL(10, computeTotalLines(2, 4, 3));
-}
-
-void test_total_lines_no_alerts_heading_when_alert_count_zero() { TEST_ASSERT_EQUAL(6, computeTotalLines(2, 4, 0)); }
-
 // ---- per-entry heights ----
 
 void test_kv_entry_height_is_one_line() { TEST_ASSERT_EQUAL(30, kvEntryHeight(/*lineH=*/30)); }
@@ -116,43 +103,42 @@ void test_spacer_divider_glyphs_entry_heights() {
   TEST_ASSERT_EQUAL(20, glyphsEntryHeight());
 }
 
-// ---- per-entry scroll metrics ----
+// ---- visibleEntryCount (clipping; the dashboard does not scroll) ----
 
-void test_scroll_metrics_no_scroll_when_content_fits() {
-  // band = 300..600, five 30px entries all fit (could hold 10)
+void test_visible_entry_count_all_fit() {
+  // band = 300..600, five 30px entries all fit (band could hold 10)
   const int heights[] = {30, 30, 30, 30, 30};
-  const auto m = computeScrollMetrics(heights, /*entryCount=*/5, /*contentTop=*/300, /*contentBottom=*/600);
-  TEST_ASSERT_EQUAL(5, m.visibleEntries);
-  TEST_ASSERT_EQUAL(0, m.maxScroll);
+  TEST_ASSERT_EQUAL(5, visibleEntryCount(heights, /*entryCount=*/5, /*contentTop=*/300, /*contentBottom=*/600));
 }
 
-void test_scroll_metrics_positive_maxScroll_when_content_overflows() {
+void test_visible_entry_count_clips_overflow() {
   int heights[25];
   for (int i = 0; i < 25; i++) heights[i] = 30;
-  const auto m = computeScrollMetrics(heights, /*entryCount=*/25, /*contentTop=*/300, /*contentBottom=*/600);
-  TEST_ASSERT_EQUAL(10, m.visibleEntries);
-  TEST_ASSERT_EQUAL(15, m.maxScroll);
+  // 300px band / 30px entries = exactly 10; the remaining 15 are clipped.
+  TEST_ASSERT_EQUAL(10, visibleEntryCount(heights, /*entryCount=*/25, /*contentTop=*/300, /*contentBottom=*/600));
 }
 
-void test_scroll_metrics_variable_heights() {
-  // band 100..200 (height 100): entries 40/20/40/20 -> 40+20+40 = 100 fits, the
-  // trailing 20 does not. visibleEntries=3, maxScroll=1.
+void test_visible_entry_count_variable_heights() {
+  // band 100..200 (height 100): 40+20+40 = 100 fits exactly, the trailing 20
+  // does not. The boundary must land on an entry edge, never mid-row.
   const int heights[] = {40, 20, 40, 20};
-  const auto m = computeScrollMetrics(heights, /*entryCount=*/4, /*contentTop=*/100, /*contentBottom=*/200);
-  TEST_ASSERT_EQUAL(3, m.visibleEntries);
-  TEST_ASSERT_EQUAL(1, m.maxScroll);
+  TEST_ASSERT_EQUAL(3, visibleEntryCount(heights, /*entryCount=*/4, /*contentTop=*/100, /*contentBottom=*/200));
 }
 
-void test_scroll_metrics_tall_entry_beyond_band_counts_zero() {
-  // A single entry taller than the whole band can never be shown fully, but it
-  // is still the last (and only) entry, so the farthest useful offset is
-  // entryCount-1 = 0 — NOT 1, which would let scrollOffset read entries[1] on a
-  // one-element array (out-of-bounds). The old entryCount-visibleEntries formula
-  // produced maxScroll=1 here; the reverse-suffix walk corrects it.
+void test_visible_entry_count_entry_taller_than_band_is_not_drawn() {
+  // An entry taller than the whole band can never be shown completely. Drawing
+  // it partially would spill past contentBottom into the button hints, so it is
+  // dropped entirely — 0, not 1.
   const int heights[] = {500};
-  const auto m = computeScrollMetrics(heights, /*entryCount=*/1, /*contentTop=*/300, /*contentBottom=*/600);
-  TEST_ASSERT_EQUAL(0, m.visibleEntries);
-  TEST_ASSERT_EQUAL(0, m.maxScroll);
+  TEST_ASSERT_EQUAL(0, visibleEntryCount(heights, /*entryCount=*/1, /*contentTop=*/300, /*contentBottom=*/600));
+}
+
+void test_visible_entry_count_degenerate_inputs() {
+  const int heights[] = {30};
+  TEST_ASSERT_EQUAL(0, visibleEntryCount(heights, /*entryCount=*/0, /*contentTop=*/0, /*contentBottom=*/600));
+  TEST_ASSERT_EQUAL(0, visibleEntryCount(nullptr, /*entryCount=*/5, /*contentTop=*/0, /*contentBottom=*/600));
+  // Inverted band draws nothing rather than indexing off the array.
+  TEST_ASSERT_EQUAL(0, visibleEntryCount(heights, /*entryCount=*/1, /*contentTop=*/600, /*contentBottom=*/300));
 }
 
 void test_max_glyphs_clamps_run_to_band() {
@@ -169,55 +155,22 @@ void test_max_glyphs_clamps_run_to_band() {
   TEST_ASSERT_EQUAL(0, maxGlyphsFor(-10));  // degenerate width never overflows
 }
 
-void test_scroll_metrics_tall_trailing_row_is_reachable() {
-  // band 0..100: leading entries are 40/40/40, the final one is 80 (a tall
-  // wrapped-text row). entryCount - visibleEntries = 4 - 2 = 2, but offset 2
-  // draws entry2 at y=0 and entry3 at y=40 -> 40+80=120 > 100, so the tall
-  // trailing row is never fully on screen. The farthest useful offset is 3
-  // (only entry3, y=0, 80 <= 100). maxScroll must reach it. This is the
-  // variable-height scroll regression the naive formula misses.
-  const int heights[] = {40, 40, 40, 80};
-  const auto m = computeScrollMetrics(heights, /*entryCount=*/4, /*contentTop=*/0, /*contentBottom=*/100);
-  TEST_ASSERT_EQUAL(2, m.visibleEntries);
-  TEST_ASSERT_EQUAL(3, m.maxScroll);
-}
+// ---- entryY (prefix-sum y cursor from the top of the band) ----
 
-// ---- entryY (prefix-sum y cursor) ----
-
-void test_entry_y_is_prefix_sum_from_scroll_offset() {
+void test_entry_y_is_prefix_sum_from_content_top() {
   const int heights[] = {30, 20, 40};
-  TEST_ASSERT_EQUAL(100, entryY(heights, /*scrollOffset=*/1, /*i=*/1, /*contentTop=*/100));
-  TEST_ASSERT_EQUAL(120, entryY(heights, /*scrollOffset=*/1, /*i=*/2, /*contentTop=*/100));
-  TEST_ASSERT_EQUAL(190, entryY(heights, /*scrollOffset=*/0, /*i=*/3, /*contentTop=*/100));
-  TEST_ASSERT_EQUAL(140, entryY(heights, /*scrollOffset=*/2, /*i=*/3, /*contentTop=*/100));
+  TEST_ASSERT_EQUAL(100, entryY(heights, /*i=*/0, /*contentTop=*/100));
+  TEST_ASSERT_EQUAL(130, entryY(heights, /*i=*/1, /*contentTop=*/100));
+  TEST_ASSERT_EQUAL(150, entryY(heights, /*i=*/2, /*contentTop=*/100));
+  TEST_ASSERT_EQUAL(190, entryY(heights, /*i=*/3, /*contentTop=*/100));
 }
 
-// ---- clampScrollOffset ----
-
-void test_clamp_scroll_offset_clamps_high() { TEST_ASSERT_EQUAL(15, clampScrollOffset(999, 15)); }
-
-void test_clamp_scroll_offset_clamps_low() { TEST_ASSERT_EQUAL(0, clampScrollOffset(-5, 15)); }
-
-void test_clamp_scroll_offset_passes_through_in_range() { TEST_ASSERT_EQUAL(7, clampScrollOffset(7, 15)); }
-
-// ---- computeTotalPages ----
-
-void test_total_pages_exact_multiple() {
-  TEST_ASSERT_EQUAL(2, computeTotalPages(/*totalEntries=*/20, /*pageSize=*/10));
+void test_entry_y_degenerate_inputs() {
+  const int heights[] = {30, 20};
+  TEST_ASSERT_EQUAL(100, entryY(heights, /*i=*/-3, /*contentTop=*/100));
+  TEST_ASSERT_EQUAL(100, entryY(nullptr, /*i=*/2, /*contentTop=*/100));
 }
 
-void test_total_pages_rounds_up_partial_last_page() {
-  // This is Finding B7's regression test: maxScroll/pageSize+1 would read "1/1"
-  // here (maxScroll=15, pageSize=10 -> 15/10+1 = 2... but the real bug case is
-  // smaller: totalEntries=21, pageSize=10 -> old formula: maxScroll=11,
-  // 11/10+1=2 which happens to agree; the actual mismatch shows up when
-  // maxScroll < pageSize but there IS a second page, e.g. totalEntries=11.
-  TEST_ASSERT_EQUAL(2, computeTotalPages(/*totalEntries=*/11, /*pageSize=*/10));
-}
-
-void test_total_pages_single_page() { TEST_ASSERT_EQUAL(1, computeTotalPages(5, 10)); }
-
-// ============================================================
 void setUp() {}
 void tearDown() {}
 
@@ -233,24 +186,16 @@ int main() {
   RUN_TEST(test_fractional_bar_center_aligns);
   RUN_TEST(test_fractional_bar_right_aligns);
   RUN_TEST(test_fractional_bar_full_width_ignores_align);
-  RUN_TEST(test_total_lines_sums_headings_and_rows);
-  RUN_TEST(test_total_lines_adds_alerts_heading_plus_each_alert);
-  RUN_TEST(test_total_lines_no_alerts_heading_when_alert_count_zero);
   RUN_TEST(test_kv_entry_height_is_one_line);
   RUN_TEST(test_text_entry_height_wraps_to_line_count);
   RUN_TEST(test_spacer_divider_glyphs_entry_heights);
-  RUN_TEST(test_scroll_metrics_no_scroll_when_content_fits);
-  RUN_TEST(test_scroll_metrics_positive_maxScroll_when_content_overflows);
-  RUN_TEST(test_scroll_metrics_variable_heights);
-  RUN_TEST(test_scroll_metrics_tall_entry_beyond_band_counts_zero);
-  RUN_TEST(test_scroll_metrics_tall_trailing_row_is_reachable);
+  RUN_TEST(test_visible_entry_count_all_fit);
+  RUN_TEST(test_visible_entry_count_clips_overflow);
+  RUN_TEST(test_visible_entry_count_variable_heights);
+  RUN_TEST(test_visible_entry_count_entry_taller_than_band_is_not_drawn);
+  RUN_TEST(test_visible_entry_count_degenerate_inputs);
   RUN_TEST(test_max_glyphs_clamps_run_to_band);
-  RUN_TEST(test_entry_y_is_prefix_sum_from_scroll_offset);
-  RUN_TEST(test_clamp_scroll_offset_clamps_high);
-  RUN_TEST(test_clamp_scroll_offset_clamps_low);
-  RUN_TEST(test_clamp_scroll_offset_passes_through_in_range);
-  RUN_TEST(test_total_pages_exact_multiple);
-  RUN_TEST(test_total_pages_rounds_up_partial_last_page);
-  RUN_TEST(test_total_pages_single_page);
+  RUN_TEST(test_entry_y_is_prefix_sum_from_content_top);
+  RUN_TEST(test_entry_y_degenerate_inputs);
   return UNITY_END();
 }

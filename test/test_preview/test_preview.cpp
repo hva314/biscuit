@@ -943,6 +943,45 @@ void render_httpmonitor_dashboard_x3() {
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_x3.bmp"));
 }
 
+// Server-driven rotation (rotation: "reverse"): sets the renderer to
+// PortraitInverted before drawing the same dashboard as render_httpmonitor_
+// dashboard_x4, same as HttpMonitorActivity::render() does. BitmapRenderer's
+// setPixel() actually flips coordinates for this orientation (see
+// test/mocks/BitmapRenderer.h), so unlike a pixel-blind mock this produces a
+// genuinely upside-down BMP -- open it and compare against
+// preview_httpmonitor_x4.bmp to confirm the whole dashboard, not just the
+// wiring, survives a 180deg flip.
+void render_httpmonitor_rotated_x4() {
+  GfxRenderer normal(480, 800);
+  renderHttpMonitorDashboard(normal);
+
+  GfxRenderer rotated(480, 800);
+  rotated.setOrientation(GfxRenderer::PortraitInverted);
+  renderHttpMonitorDashboard(rotated);
+
+  // A real, cheap check that the transform actually ran, not just that
+  // setOrientation() was called: a 180deg point reflection means pixel i of
+  // the flat row-major buffer in one frame must equal pixel (N-1-i) in the
+  // other -- reversing `normal`'s buffer must exactly reproduce `rotated`'s.
+  // If BitmapRenderer's setPixel() stopped transforming coordinates (e.g. the
+  // orientation branch was deleted), this would fail with the two buffers
+  // identical instead of mirrored.
+  const uint8_t* normalBuf = normal.getFrameBuffer();
+  const uint8_t* rotatedBuf = rotated.getFrameBuffer();
+  const size_t n = normal.getBufferSize();
+  TEST_ASSERT_EQUAL(n, rotated.getBufferSize());
+  bool mismatch = false;
+  for (size_t i = 0; i < n; i++) {
+    if (normalBuf[n - 1 - i] != rotatedBuf[i]) {
+      mismatch = true;
+      break;
+    }
+  }
+  TEST_ASSERT_FALSE_MESSAGE(mismatch, "rotated buffer is not normal's buffer reversed -- 180deg transform is broken");
+
+  TEST_ASSERT_TRUE(rotated.saveBMP("test/preview_httpmonitor_rotated_x4.bmp"));
+}
+
 // Dense-budget preview: exactly the "≤ 12 rows + ≤ 4 headings" no-scroll target
 // documented in docs/http-monitor-server-api.md, at the X3 geometry (528x792) —
 // the tighter of the two panels (shorter, and Lyra-style headers cut it further).
@@ -1163,6 +1202,7 @@ int main() {
   RUN_TEST(render_diceroller);
   RUN_TEST(render_httpmonitor_dashboard_x4);
   RUN_TEST(render_httpmonitor_dashboard_x3);
+  RUN_TEST(render_httpmonitor_rotated_x4);
   RUN_TEST(render_httpmonitor_dense_x3_top);
   RUN_TEST(render_httpmonitor_overflow_x3_top);
   RUN_TEST(render_httpmonitor_worstcase_x4);

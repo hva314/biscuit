@@ -39,10 +39,29 @@ struct Config {
   int timeoutMs = DEFAULT_TIMEOUT_MS;
   int fullRefreshEvery = DEFAULT_FULL_REFRESH_EVERY;  // 0 disables periodic full refresh
   int dialTickSec = DEFAULT_DIAL_TICK_SEC;            // 0 disables the liveness dial
-  std::string title = "HTTP Monitor";
   std::string authHeader;            // optional, sent verbatim as an HTTP header, e.g. "Authorization: Bearer abc123"
   int fontSize = DEFAULT_FONT_SIZE;  // fallback dashboard font size, used only when the server omits `fontSize`
+  // Base URL for the four button actions, e.g. "http://192.168.0.24:8777/cmd" ->
+  // GET .../cmd/up|down|left|right. Empty (the default) means all four buttons
+  // stay inert -- see actionUrlFor().
+  std::string actionUrl;
 };
+
+// Slot order matches HttpMonitorActivity::ActionSlot {Up,Down,Left,Right} --
+// NOT MappedInputManager::Button, whose enum order differs (Back, Confirm,
+// Left, Right, Up, Down, ...). Indexing this array with a Button value would
+// silently pick the wrong slot (or an inert one). Kept here (not in the
+// activity) so the URL math is natively testable without pulling in
+// Arduino/HAL types.
+constexpr const char* ACTION_SLOT_NAMES[4] = {"up", "down", "left", "right"};
+
+// Builds the full command URL for a button slot (0=up, 1=down, 2=left, 3=right).
+// Returns "" when actionUrl is empty -- the caller uses that as "inert button".
+inline std::string actionUrlFor(const Config& config, int slot) {
+  if (config.actionUrl.empty()) return "";
+  if (slot < 0 || slot >= 4) return "";
+  return config.actionUrl + "/" + ACTION_SLOT_NAMES[slot];
+}
 
 // Pure parser: parses the full contents of a monitor.conf file (`text`) into `out`.
 // Returns true on success. On failure, returns false and sets `errorOut` — the only

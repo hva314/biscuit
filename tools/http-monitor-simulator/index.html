@@ -132,9 +132,15 @@
         </span>
       </div>
       <div class="row">
-        <label>Config title</label>
-        <input type="text" id="config-title" value="HTTP Monitor" size="18"
-               title="Header title for fetching/error/no-config (firmware sources this from monitor.conf)">
+        <label>Fallback title</label>
+        <span class="note">The device has no title of its own: the header shows
+          the payload's own <code>title</code> field once one arrives, and the
+          fixed string <code>HTTP Monitor</code> before that (fetching /
+          no-config / error-before-first-poll screens).</span>
+      </div>
+      <div class="row">
+        <label>Rotation</label>
+        <label><input type="checkbox" id="rotation-reverse"> flip 180&deg; (<code>rotation: "reverse"</code>)</label>
       </div>
       <details style="margin-top:6px">
         <summary style="font-size:12px">Error-state fields</summary>
@@ -259,7 +265,11 @@ let spinnerFrame = 0;
 let spinnerAuto = true;
 let crosshairOn = true;
 let hover = null;                         // {x,y} in device pixels
-let configTitle = "HTTP Monitor";
+// The device has no title of its own -- this is only the fallback shown
+// before a title has ever arrived from the server (matches
+// HttpMonitorActivity.cpp's kDefaultTitle).
+const DEFAULT_TITLE = "HTTP Monitor";
+let rotationReverse = false;              // manual override checkbox -- see applyRotationTransform()
 let httpCode = 404;
 let fetchError = "Not Found";
 let configError = "";
@@ -615,12 +625,15 @@ function parseDashboard(jsonText) {
   // Top-level server-driven font size. Out of range / wrong type -> -1 = inherit
   // the monitor.conf fallback, matching HttpMonitorSchema::apply().
   const fontSize = normSize(obj.fontSize);
+  // Only the exact string "reverse" flips -- absent, misspelled, or the wrong
+  // type all fall back to normal, matching HttpMonitorSchema::apply().
+  const rotation = obj.rotation === "reverse" ? "reverse" : "normal";
   const alerts = (Array.isArray(obj.alerts) ? obj.alerts : []).slice(0, 4).map((a) => strOf(a, 48));
   const sections = (Array.isArray(obj.sections) ? obj.sections : []).slice(0, 6).map((s) => ({
     heading: strOf(s && s.heading, 24),
     rows: (Array.isArray(s && s.rows) ? s.rows : []).slice(0, 12).map(parseRow),
   }));
-  return { title, updated, fontSize, sections, alerts };
+  return { title, updated, fontSize, rotation, sections, alerts };
 }
 
 /* =====================================================================
@@ -912,7 +925,7 @@ function render() {
 
 function renderNoConfig() {
   // Header: title only, no updated, no dial (spinner animates in FETCHING/SHOWING/ERROR only).
-  drawHeader(configTitle, "", false);
+  drawHeader(DEFAULT_TITLE, "", false);
 
   const lineH10 = lineH(UI_10);
   const small = smallLineH();                       // getLineHeight(SMALL)+4 = 27
@@ -937,13 +950,13 @@ function renderNoConfig() {
 }
 
 function renderFetching() {
-  drawHeader(configTitle, parsed ? parsed.updated : "", true);
+  drawHeader((parsed && parsed.title) || DEFAULT_TITLE, parsed ? parsed.updated : "", true);
   drawCenteredText(UI_10, Math.floor(pageH / 2), "Fetching...");
   // NO button hints.
 }
 
 function renderError() {
-  drawHeader(configTitle, parsed ? parsed.updated : "", true);
+  drawHeader((parsed && parsed.title) || DEFAULT_TITLE, parsed ? parsed.updated : "", true);
 
   const lineH10 = lineH(UI_10);
   const smallLine = FONT_METRICS[SMALL].lineHeight + 2;   // getLineHeight(SMALL)+2 = 25
@@ -966,7 +979,7 @@ function renderShowing() {
   // updating, so a typo mid-edit looks like the simulator has hung.
   const dash = parsed;
   if (!dash) return;
-  const title = dash.title || configTitle;
+  const title = dash.title || DEFAULT_TITLE;
   drawHeader(title, dash.updated, true);
 
   const contentBottom = pageH - METRICS.buttonHintsHeight - METRICS.verticalSpacing;
@@ -1091,7 +1104,18 @@ function readJson() {
     el.style.display = "block";
   }
   updateScrollControls();
+  applyRotationTransform();
   render();
+}
+
+// Effective flip = payload-driven OR the manual checkbox: the payload's
+// "rotation": "reverse" (matching HttpMonitorSchema::apply()'s exact-string
+// rule) is the primary driver, same as the device; the checkbox is a manual
+// override so a payload with no `rotation` field (e.g. the built-in samples)
+// can still be eyeballed flipped without editing JSON.
+function applyRotationTransform() {
+  const reversed = rotationReverse || (parsed && parsed.rotation === "reverse");
+  canvas.style.transform = reversed ? "rotate(180deg)" : "";
 }
 
 // The dashboard does not scroll, so the only thing to report is whether the
@@ -1141,8 +1165,17 @@ $("state-pills").addEventListener("click", (e) => {
   renderAll();
 });
 
+// ---- rotation ----
+// Purely a display flip -- server-driven ("rotation": "reverse" in the
+// payload), mirrored here by a manual toggle since this simulator has no
+// server round-trip. CSS transform only: the layout math itself is unaffected
+// (logical width/height don't change on a 180deg flip -- see the server API doc).
+$("rotation-reverse").addEventListener("change", (e) => {
+  rotationReverse = e.target.checked;
+  applyRotationTransform();
+});
+
 // ---- config / error fields ----
-$("config-title").addEventListener("input", (e) => { configTitle = e.target.value; render(); });
 $("http-code").addEventListener("input", (e) => { httpCode = parseInt(e.target.value, 10) || 0; render(); });
 $("fetch-error").addEventListener("input", (e) => { fetchError = e.target.value; render(); });
 $("config-error").addEventListener("input", (e) => { configError = e.target.value; render(); });

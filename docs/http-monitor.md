@@ -40,9 +40,13 @@ Put this file at the **top level of the `/biscuit` folder** on the SD card
 | `timeout_ms` | 5000 | 1000–30000 | How long the device waits for a response before giving up. Out-of-range values are clamped. |
 | `full_refresh_every` | 20 | 0 disables, otherwise a positive count | Every this-many *redrawing* polls, the device does a deeper "clean" e-ink refresh. This is the visible full-screen flash. See "The refresh model" below. |
 | `dial_tick_sec` | 5 | 0 disables, otherwise 1–60 | How often the liveness dial's hand advances, in seconds. Every tick costs a full-screen e-ink update, so this directly controls panel wear — set it to `0` for the calmest possible display. See "The liveness dial" below. |
-| `title` | `HTTP Monitor` | any short string | Shown in the header. Overridable per-response by the server's own `title` field. |
-| `auth_header` | *(none — no header sent)* | a full HTTP header, e.g. `Authorization: Bearer abc123` | Sent verbatim as an HTTP header on every request. For access control, not for confidentiality — see the security note in the server API doc. |
+| `auth_header` | *(none — no header sent)* | a full HTTP header, e.g. `Authorization: Bearer abc123` | Sent verbatim as an HTTP header on every request (including button-action requests). For access control, not for confidentiality — see the security note in the server API doc. |
 | `font_size` | 2 | 0–3 | **Fallback** dashboard font size (0 smallest … 3 largest), used only when the server does not send a top-level `fontSize`. The server is the normal way to set this — see the server API doc. |
+| `action_url` | *(none — buttons inert)* | a base URL, e.g. `http://192.168.0.24:8777/cmd` | Base URL for the four button actions. Left/Right/Up/Down each send `GET <action_url>/left`, `/right`, `/up`, `/down`. Absent (the default) means all four buttons do nothing. See "Buttons" below. |
+
+The device has no title of its own — the header always shows whatever the
+server's own `title` field last sent (see the server API doc), falling back to
+the literal string `HTTP Monitor` before the first successful poll.
 
 If the file is missing entirely, or `url` is missing or blank, the tool shows
 an on-screen error naming the exact problem so you can fix it without a
@@ -57,8 +61,8 @@ interval_sec       = 30      # 5..3600
 timeout_ms         = 5000    # 1000..30000
 full_refresh_every = 20      # 0 disables
 dial_tick_sec      = 5       # 0 disables the liveness dial
-title              = prod-1
 font_size          = 2       # 0..3, fallback only; the server normally sets this
+# action_url       = http://192.168.1.10:8777/cmd
 # auth_header      = Authorization: Bearer abc123
 ```
 
@@ -71,13 +75,27 @@ Copy this, edit `url` to point at your own server, and drop it at
 |---|---|
 | Back | Exit the tool |
 | Confirm | Force an immediate refresh (doesn't wait for the next scheduled poll) |
-| Left / Right | *(nothing)* |
-| Up / Down | *(nothing)* |
+| Left / Right / Up / Down | Send a command to `action_url` (see below) |
 
-Back and Confirm are the only inputs. The dashboard does not scroll and its font
-size is not adjustable on the device — the server controls the font size and is
-responsible for sending an amount of content that fits. Anything that doesn't fit
-is clipped at a row boundary. See "Fitting the screen" in the server API doc.
+The dashboard does not scroll and its font size is not adjustable on the
+device — the server controls the font size and is responsible for sending an
+amount of content that fits. Anything that doesn't fit is clipped at a row
+boundary. See "Fitting the screen" in the server API doc.
+
+### Button actions
+
+If `action_url` is set, Left/Right/Up/Down each send a plain `GET` request to
+`<action_url>/<slot>` — `left`, `right`, `up`, or `down` — and show a brief
+"sent" (or failure) indicator just above the button hints. Nothing else
+happens: the reply body is not rendered, the poll timer is not reset, and
+there is no re-poll. This is a fire-and-forget remote control, not a
+data-fetching action — use it for things like toggling lights or nudging
+volume on the server. If `action_url` is absent (the default), all four
+buttons are inert, same as before this feature existed.
+
+A button always sends the same action regardless of `rotation` (see the
+server API doc) — flipping the screen only changes what's drawn, not which
+physical button means what.
 
 ## Power: this tool keeps the device awake
 

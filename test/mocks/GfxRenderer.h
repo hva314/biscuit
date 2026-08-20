@@ -41,8 +41,8 @@ class GfxRenderer {
   int getTextHeight(int) { return 20; }
   int getLineHeight(int) { return 24; }
   void invertScreen() {}
-  void setOrientation(Orientation) {}
-  Orientation getOrientation() const { return Portrait; }
+  void setOrientation(Orientation o) { orientation = o; }
+  Orientation getOrientation() const { return orientation; }
   uint8_t* getFrameBuffer() { return nullptr; }
 
   std::string truncatedText(int, const char* t, int, int = 0) { return t; }
@@ -56,4 +56,7 @@ class GfxRenderer {
   };
   std::vector<DrawCall> drawCalls;
   void clearDrawCalls() { drawCalls.clear(); }
+
+ private:
+  Orientation orientation = Portrait;
 };

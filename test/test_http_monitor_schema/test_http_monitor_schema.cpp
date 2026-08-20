@@ -15,11 +15,11 @@
 
 using namespace HttpMonitorSchema;
 
-static Dashboard parse(const char* json, const char* defaultTitle = "monitor") {
+static Dashboard parse(const char* json) {
   JsonDocument doc;
   deserializeJson(doc, json);
   Dashboard d;
-  apply(doc, d, defaultTitle);
+  apply(doc, d);
   return d;
 }
 
@@ -43,8 +43,11 @@ void test_legacy_kv_row_defaults() {
 }
 
 void test_title_updated_defaults() {
-  const Dashboard d = parse(R"({"sections":[]})", /*defaultTitle=*/"fallback");
-  TEST_ASSERT_EQUAL_STRING("fallback", d.title);
+  // The server owns the title outright now: when it omits `title`, the
+  // dashboard's title is simply empty (the activity supplies its own
+  // fallback string, not the schema).
+  const Dashboard d = parse(R"({"sections":[]})");
+  TEST_ASSERT_EQUAL_STRING("", d.title);
   TEST_ASSERT_EQUAL_STRING("", d.updated);
   const Dashboard d2 = parse(R"({"title":"prod","updated":"12:01:02","sections":[]})");
   TEST_ASSERT_EQUAL_STRING("prod", d2.title);
@@ -346,6 +349,43 @@ void test_typed_row_params_count_as_a_change() {
   TEST_ASSERT_TRUE(parse(b1) != parse(b3));
 }
 
+// ---- rotation ----
+
+void test_rotation_absent_is_normal() {
+  const Dashboard d = parse(R"({"sections":[]})");
+  TEST_ASSERT_FALSE(d.reversed);
+}
+
+void test_rotation_normal_is_normal() {
+  const Dashboard d = parse(R"({"rotation":"normal","sections":[]})");
+  TEST_ASSERT_FALSE(d.reversed);
+}
+
+void test_rotation_reverse_is_reversed() {
+  const Dashboard d = parse(R"({"rotation":"reverse","sections":[]})");
+  TEST_ASSERT_TRUE(d.reversed);
+}
+
+void test_rotation_garbage_string_is_normal() {
+  const Dashboard d = parse(R"({"rotation":"upside-down","sections":[]})");
+  TEST_ASSERT_FALSE(d.reversed);
+}
+
+void test_rotation_wrong_type_is_normal() {
+  TEST_ASSERT_FALSE(parse(R"({"rotation":1,"sections":[]})").reversed);
+  TEST_ASSERT_FALSE(parse(R"({"rotation":true,"sections":[]})").reversed);
+  TEST_ASSERT_FALSE(parse(R"({"rotation":null,"sections":[]})").reversed);
+}
+
+void test_rotation_participates_in_equality() {
+  // A rotation-only change must count as a change, or the activity would never
+  // repaint when a server flips it.
+  const Dashboard normal = parse(R"({"sections":[]})");
+  const Dashboard reversed = parse(R"({"rotation":"reverse","sections":[]})");
+  TEST_ASSERT_TRUE(normal != reversed);
+  TEST_ASSERT_FALSE(normal == reversed);
+}
+
 void test_truncated_fields_that_render_identically_compare_equal() {
   // Two labels that differ only past the truncation cap draw the same pixels, so
   // they must compare equal — otherwise a server with a long, slightly-varying
@@ -384,6 +424,12 @@ int main() {
   RUN_TEST(test_font_size_in_range_is_taken);
   RUN_TEST(test_font_size_out_of_range_inherits);
   RUN_TEST(test_font_size_is_independent_of_row_size);
+  RUN_TEST(test_rotation_absent_is_normal);
+  RUN_TEST(test_rotation_normal_is_normal);
+  RUN_TEST(test_rotation_reverse_is_reversed);
+  RUN_TEST(test_rotation_garbage_string_is_normal);
+  RUN_TEST(test_rotation_wrong_type_is_normal);
+  RUN_TEST(test_rotation_participates_in_equality);
   RUN_TEST(test_identical_payloads_compare_equal);
   RUN_TEST(test_every_drawn_field_counts_as_a_change);
   RUN_TEST(test_typed_row_params_count_as_a_change);

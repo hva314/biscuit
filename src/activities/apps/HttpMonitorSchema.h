@@ -77,6 +77,11 @@ struct Dashboard {
   // the server omitted it, in which case the activity falls back to
   // monitor.conf's `font_size`. Rows may still override per-row via `size`.
   uint8_t fontSize = SIZE_INHERIT;
+  // Server-driven panel orientation. `false` (the default) is the normal,
+  // right-way-up mount; `true` flips the screen 180deg for a device mounted
+  // upside down. A physical button always fires the same action regardless of
+  // this flag -- rotation is purely a display concern.
+  bool reversed = false;
   std::vector<Section> sections;
   std::vector<std::array<char, 48>> alerts;
 };
@@ -111,8 +116,8 @@ inline bool operator==(const Section& a, const Section& b) {
 inline bool operator!=(const Section& a, const Section& b) { return !(a == b); }
 
 inline bool operator==(const Dashboard& a, const Dashboard& b) {
-  return a.fontSize == b.fontSize && strcmp(a.title, b.title) == 0 && strcmp(a.updated, b.updated) == 0 &&
-         a.sections == b.sections && a.alerts == b.alerts;
+  return a.fontSize == b.fontSize && a.reversed == b.reversed && strcmp(a.title, b.title) == 0 &&
+         strcmp(a.updated, b.updated) == 0 && a.sections == b.sections && a.alerts == b.alerts;
 }
 inline bool operator!=(const Dashboard& a, const Dashboard& b) { return !(a == b); }
 
@@ -205,10 +210,10 @@ inline void parseRow(JsonObjectConst obj, Row& out) {
 }
 
 // Walk the (already filtered) document into `next`, enforcing every cap.
-inline void apply(const JsonDocument& doc, Dashboard& next, const char* defaultTitle) {
+inline void apply(const JsonDocument& doc, Dashboard& next) {
   next = Dashboard{};  // wipe any previous parse's state (vectors + fixed buffers)
 
-  copyBounded(next.title, sizeof(next.title), doc["title"] | (defaultTitle ? defaultTitle : ""));
+  copyBounded(next.title, sizeof(next.title), doc["title"] | "");
   copyBounded(next.updated, sizeof(next.updated), doc["updated"] | "");
 
   // Top-level font size: same 0..3 ladder as a row's `size`. Anything else
@@ -216,6 +221,12 @@ inline void apply(const JsonDocument& doc, Dashboard& next, const char* defaultT
   // using monitor.conf's font_size -- existing servers stay unaffected.
   const int fontRaw = doc["fontSize"] | -1;
   next.fontSize = (fontRaw >= 0 && fontRaw <= 3) ? static_cast<uint8_t>(fontRaw) : SIZE_INHERIT;
+
+  // Top-level rotation: only the exact string "reverse" flips the panel.
+  // Absent, misspelled, or the wrong type all fall back to the normal
+  // orientation -- there is no "invalid rotation" error state, just a default.
+  const char* rotationRaw = doc["rotation"] | "";
+  next.reversed = strcmp(rotationRaw, "reverse") == 0;
 
   if (doc["alerts"].is<JsonArrayConst>()) {
     for (JsonVariantConst a : doc["alerts"].as<JsonArrayConst>()) {

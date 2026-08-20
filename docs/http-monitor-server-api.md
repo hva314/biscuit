@@ -41,9 +41,10 @@ any wider than that.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `title` | string | optional | Header text. Overrides the `title` set in the device's `monitor.conf`, if present. |
+| `title` | string | optional | Header text. The device has no title of its own — omit this and the header falls back to the literal string `HTTP Monitor` until a response sends one. |
 | `updated` | string | optional | A display-ready timestamp string. The device shows it as-is; it does not parse or reformat it. |
 | `fontSize` | integer 0–3 | optional | Dashboard-wide font size (0 smallest … 3 largest). **This is how you set the font size** — the device has no font-size buttons. Omit it (or send anything outside 0–3) and the device falls back to `font_size` in its `monitor.conf`. Individual rows can still override it with `size`. |
+| `rotation` | string | optional | `"normal"` (default) or `"reverse"`. `"reverse"` flips the panel 180° for a device mounted upside down. Anything else (absent, misspelled, wrong type) is treated as `"normal"`. Only the display flips — a physical button always fires the same action regardless of this field. |
 | `sections` | array of section objects | **required** (may be empty, but see failure semantics) | The body of the dashboard. |
 | `sections[].heading` | string | optional | Section heading, drawn above its rows. Omit for an unheaded group of rows. |
 | `sections[].rows` | array of row objects | **required** | The rows in this section. |
@@ -187,7 +188,34 @@ Note that the budget depends on the `fontSize` you send — the numbers above as
 the default. A larger `fontSize` means taller rows and correspondingly fewer of
 them.
 
-## 5. Worked example
+## 5. Button actions
+
+If the device's `monitor.conf` sets `action_url`, the four directional buttons
+each send a plain `GET` to one of four fixed paths under it:
+
+| Button | Request |
+|---|---|
+| Up | `GET <action_url>/up` |
+| Down | `GET <action_url>/down` |
+| Left | `GET <action_url>/left` |
+| Right | `GET <action_url>/right` |
+
+For example, `action_url = http://192.168.0.24:8777/cmd` makes the Up button
+send `GET http://192.168.0.24:8777/cmd/up`.
+
+The device does not read, parse, or render the response body — only the HTTP
+status code matters, and only to choose which brief on-screen indicator to
+show ("sent" on 2xx, otherwise the status code or "failed"). Treat this as a
+fire-and-forget command channel: respond quickly, and put whatever
+confirmation you need in your own logs, not the response body. The same
+`auth_header` sent with the status poll is sent with every action request, if
+configured.
+
+There is no built-in way for the device to know what each button *does* on
+your server — that's a deployment detail between you and your own remote,
+not something the schema declares.
+
+## 6. Worked example
 
 A complete, stdlib-only Python 3 script — no `pip install` needed — that
 builds a status payload from system state and writes it out for a web server
@@ -441,7 +469,7 @@ handle /status.json {
 }
 ```
 
-## 6. Verifying with `curl` before touching the device
+## 7. Verifying with `curl` before touching the device
 
 Confirm the endpoint works on its own before pointing the device at it:
 
@@ -461,7 +489,7 @@ curl -s -o /dev/null -w '%{http_code} %{size_download} bytes\n' http://192.168.1
 
 confirms the status code is `200` and the body size is under the 8 KB limit.
 
-## 7. Failure semantics
+## 8. Failure semantics
 
 What the device shows for each failure mode, so you can reason about your own
 error paths:
@@ -495,7 +523,7 @@ without a `Content-Length` header, the device will refuse it with
 `Response too large or unknown length`. Serving a static file through nginx
 or Caddy sets the header for you; a hand-rolled HTTP handler may not.
 
-## 8. Security note
+## 9. Security note
 
 The intended deployment is a **trusted local network over plain HTTP**. HTTPS
 works as a transport, but the device does not validate TLS certificates, so
@@ -507,7 +535,16 @@ the server on a **WireGuard or Tailscale** network rather than exposing the
 endpoint directly to the internet.
 
 The optional `auth_header` config key (set on the device, in
-`monitor.conf`) is sent verbatim as an HTTP header on every request. Treat it
-as an **access-control** mechanism — a shared secret the server can check
-before returning data — not as a **confidentiality** mechanism. Anyone who can
-observe plain HTTP traffic on the network can read it.
+`monitor.conf`) is sent verbatim as an HTTP header on every request, including
+button-action requests. Treat it as an **access-control** mechanism — a shared
+secret the server can check before returning data or acting on a command — not
+as a **confidentiality** mechanism. Anyone who can observe plain HTTP traffic
+on the network can read it.
+
+**Button actions are state-changing `GET` requests.** This is a deliberate
+deviation from ordinary HTTP practice (state changes are conventionally `POST`
+or similar), made for the same trusted-LAN, single-user-remote-control use
+case as the rest of this tool. If your action endpoint does anything
+destructive or expensive, put `auth_header` in front of it, and be aware that
+anything that pre-fetches or crawls URLs on your network (a browser
+prefetcher, some proxies) could trigger it unintentionally.

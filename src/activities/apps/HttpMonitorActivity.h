@@ -8,6 +8,8 @@
 #include "HttpMonitorSchema.h"
 #include "activities/Activity.h"
 
+class HTTPClient;
+
 // A live server dashboard. Polls a JSON status endpoint on a timer and renders a
 // server-driven schema (sections -> rows). See docs/http-monitor.md and
 // docs/http-monitor-server-api.md for the config file and server contract.
@@ -25,6 +27,8 @@ class HttpMonitorActivity final : public Activity {
 
  private:
   enum State { NO_CONFIG, IDLE, FETCHING, SHOWING, ERROR };
+  // Order matches HttpMonitorConfig::ACTION_SLOT_NAMES ("up","down","left","right").
+  enum class ActionSlot { Up, Down, Left, Right };
 
   // Hard caps on untrusted response data (sections/rows/alerts/label/value/
   // text/glyphs) live in HttpMonitorSchema.h and are enforced as the filtered
@@ -72,13 +76,35 @@ class HttpMonitorActivity final : public Activity {
   int spinnerFrame = 0;
   unsigned long lastSpinnerUpdate = 0;
 
+  // Button-action ack: a small, brief "sent" indicator, and nothing more -- no
+  // re-poll, no rendering of the reply, no poll-timer reset. Cleared by loop()
+  // once ACTION_ACK_MS has elapsed, which requests one more update to erase it.
+  static constexpr unsigned long ACTION_ACK_MS = 1500;
+  char actionAck[24] = {};
+  // Start time, not an absolute deadline -- compared via wrap-safe subtraction
+  // (millis() - actionAckStartMs >= ACTION_ACK_MS), matching every other timer
+  // in this file (lastPollMs, lastSpinnerUpdate). An absolute `until` deadline
+  // breaks at the ~49-day millis() wrap: if it wrapped to a small number, a
+  // plain `millis() >= until` comparison would go true immediately.
+  unsigned long actionAckStartMs = 0;
+
   void loadConfig();
   void fetch();
+  void sendAction(ActionSlot slot);
+  // Splits config.authHeader on ':' and adds it to `http` -- shared by fetch()
+  // and sendAction() so the header logic isn't duplicated.
+  void applyAuthHeader(HTTPClient& http);
+  // Sets actionAck (RenderLock'd) and requests a repaint -- shared by
+  // sendAction()'s "sending"/result steps.
+  void setActionAck(const char* text);
 
   void renderNoConfig();
   void renderFetching();
   void renderError();
   void renderDashboard();
+  // Centered SMALL text just above the hint bar, white-filled behind it since
+  // this band overlaps the dashboard content band; no-op when actionAck is empty.
+  void drawActionAck();
 
   // The dashboard-wide font size: the server's top-level `fontSize` when it sent
   // one, otherwise monitor.conf's `font_size`. Returns a ladder index (0..3).

@@ -32,6 +32,25 @@ int clampInt(int value, int lo, int hi) {
   return value;
 }
 
+// Strip exactly one trailing '/' so `.../cmd` and `.../cmd/` behave alike --
+// actionUrlFor() always joins with its own '/'.
+std::string stripTrailingSlash(const std::string& s) {
+  if (!s.empty() && s.back() == '/') return s.substr(0, s.size() - 1);
+  return s;
+}
+
+// True when `value` contains a CR or LF -- parse() splits lines on '\n', so an
+// embedded '\n' can't survive into a single line's value, but an embedded '\r'
+// can (a stray CR in the middle of a line, not at the very end where trim()
+// would catch it). `url` and `action_url` both go straight into
+// http.begin()'s request line; some lenient HTTP parsers treat a lone CR or LF
+// as a line terminator, which would let a crafted config smuggle a second
+// header. Same guard as auth_header (below): reject the value outright rather
+// than strip and hope nothing meaningful was lost.
+bool hasCrOrLf(const std::string& value) {
+  return value.find('\r') != std::string::npos || value.find('\n') != std::string::npos;
+}
+
 // Storage.readFile() (via SDCardManager) caps a file read at 50 KB — parse()'s
 // own per-line splitting doesn't otherwise bound how long a single `key = value`
 // line can be, so a pathological config could otherwise hand a ~50 KB string to
@@ -40,7 +59,6 @@ int clampInt(int value, int lo, int hi) {
 // `title` for *display* — the oversized string would still sit in RAM). 256 chars
 // matches the existing URL entry cap in HttpClientActivity/KeyboardEntryActivity.
 constexpr size_t MAX_URL_LEN = 256;
-constexpr size_t MAX_TITLE_LEN = 64;
 constexpr size_t MAX_AUTH_HEADER_LEN = 512;
 
 std::string clampLen(const std::string& s, size_t maxLen) { return s.substr(0, maxLen); }
@@ -70,7 +88,14 @@ bool parse(const char* text, Config& out, std::string& errorOut) {
     if (key.empty()) continue;
 
     if (key == "url") {
-      out.url = clampLen(value, MAX_URL_LEN);
+      // A rejected value leaves out.url empty, so parse() falls through to its
+      // existing "missing url" fatal error below -- the correct, already-tested
+      // visible outcome, not a new error path.
+      if (!hasCrOrLf(value)) out.url = clampLen(value, MAX_URL_LEN);
+    } else if (key == "action_url") {
+      // A rejected value leaves out.actionUrl empty, so all four buttons stay
+      // inert -- same as if action_url were never set.
+      if (!hasCrOrLf(value)) out.actionUrl = stripTrailingSlash(clampLen(value, MAX_URL_LEN));
     } else if (key == "interval_sec") {
       out.intervalSec = clampInt(atoi(value.c_str()), MIN_INTERVAL_SEC, MAX_INTERVAL_SEC);
     } else if (key == "timeout_ms") {
@@ -83,18 +108,10 @@ bool parse(const char* text, Config& out, std::string& errorOut) {
       out.dialTickSec = clampInt(atoi(value.c_str()), MIN_DIAL_TICK_SEC, MAX_DIAL_TICK_SEC);
     } else if (key == "font_size") {
       out.fontSize = clampInt(atoi(value.c_str()), MIN_FONT_SIZE, MAX_FONT_SIZE);
-    } else if (key == "title") {
-      if (!value.empty()) out.title = clampLen(value, MAX_TITLE_LEN);
     } else if (key == "auth_header") {
-      // parse() splits lines on '\n', so an embedded '\n' can't survive into a
-      // single line's value — but an embedded '\r' can (e.g. a stray CR in the
-      // middle of a line, not at the very end where trim() would catch it), and
-      // this value goes straight into http.addHeader(). A lone CR or LF is
-      // enough for some lenient HTTP parsers to treat it as a line terminator,
-      // which would let a crafted config smuggle a second header. Reject the
-      // value outright (leave authHeader at its empty default) rather than
-      // trying to strip and hope nothing meaningful was lost.
-      if (value.find('\r') == std::string::npos && value.find('\n') == std::string::npos) {
+      // Same hasCrOrLf() guard as url/action_url above -- this value goes
+      // straight into http.addHeader().
+      if (!hasCrOrLf(value)) {
         out.authHeader = clampLen(value, MAX_AUTH_HEADER_LEN);
       }
     }

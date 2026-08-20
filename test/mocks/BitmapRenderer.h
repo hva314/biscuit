@@ -38,12 +38,23 @@ class GfxRenderer {
   int SW;
   int SH;
   std::vector<uint8_t> fb;  // 0=white, 1=black, size SW*SH
+  Orientation orientation = Portrait;
   // Simple 8x16 bitmap font (ASCII 32-126)
   // Each char: 8 wide x 16 tall, stored as 16 bytes (1 bit per pixel, MSB left)
   static constexpr int CHAR_W = 8;
   static constexpr int CHAR_H = 16;
 
+  // A 180deg flip does not change SW/SH (getScreenWidth/Height stay whatever
+  // they were constructed with) -- only where each plotted pixel actually
+  // lands. Doing the transform here, the single lowest-level plot point every
+  // higher-level primitive (fillRect, drawRect, drawLine, drawChar, ...)
+  // funnels through, means the whole preview is genuinely upside down in the
+  // saved BMP, not just tagged as such.
   void setPixel(int x, int y, bool black) {
+    if (orientation == PortraitInverted) {
+      x = SW - 1 - x;
+      y = SH - 1 - y;
+    }
     if (x >= 0 && x < SW && y >= 0 && y < SH) fb[y * SW + x] = black ? 1 : 0;
   }
 
@@ -317,8 +328,11 @@ class GfxRenderer {
   void invertScreen() {
     for (size_t i = 0; i < fb.size(); i++) fb[i] = fb[i] ? 0 : 1;
   }
-  void setOrientation(Orientation) {}
-  Orientation getOrientation() const { return Portrait; }
+  // Tracks the last-requested orientation, consumed by setPixel() above (the
+  // actual 180deg coordinate transform for PortraitInverted) and returned by
+  // getOrientation() for assertions.
+  void setOrientation(Orientation o) { orientation = o; }
+  Orientation getOrientation() const { return orientation; }
   uint8_t* getFrameBuffer() { return fb.data(); }
   size_t getBufferSize() const { return fb.size(); }
 

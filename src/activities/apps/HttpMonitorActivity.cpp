@@ -24,6 +24,11 @@ using HttpMonitorSchema::SIZE_INHERIT;
 
 namespace {
 
+// The server owns the title outright (monitor.conf no longer has one); this is
+// only ever shown before the first successful poll or when a poll has never
+// returned a title.
+constexpr const char* kDefaultTitle = "HTTP Monitor";
+
 std::string trim(const std::string& s) {
   const size_t start = s.find_first_not_of(" \t\r\n");
   if (start == std::string::npos) return "";
@@ -32,6 +37,24 @@ std::string trim(const std::string& s) {
 }
 
 }  // namespace
+
+// ----------------------------------------------------------------
+// Auth header
+// ----------------------------------------------------------------
+
+// Shared by fetch() and sendAction(): splits config.authHeader on the first
+// ':' and adds it verbatim as an HTTP header. A no-op when authHeader is empty
+// or has no colon.
+void HttpMonitorActivity::applyAuthHeader(HTTPClient& http) {
+  if (config.authHeader.empty()) return;
+  const size_t colon = config.authHeader.find(':');
+  if (colon == std::string::npos) return;
+  const std::string headerName = trim(config.authHeader.substr(0, colon));
+  const std::string headerValue = trim(config.authHeader.substr(colon + 1));
+  if (!headerName.empty()) {
+    http.addHeader(headerName.c_str(), headerValue.c_str());
+  }
+}
 
 // ----------------------------------------------------------------
 // Lifecycle
@@ -43,7 +66,13 @@ void HttpMonitorActivity::onEnter() {
   requestUpdate();
 }
 
-void HttpMonitorActivity::onExit() { Activity::onExit(); }
+void HttpMonitorActivity::onExit() {
+  Activity::onExit();
+  // Belt-and-braces: render() already restores Portrait after every frame, but
+  // this guarantees no other activity ever inherits an upside-down renderer,
+  // even if exit happens mid-fetch before a frame completes.
+  renderer.setOrientation(GfxRenderer::Portrait);
+}
 
 void HttpMonitorActivity::loadConfig() {
   configError.clear();
@@ -113,10 +142,33 @@ void HttpMonitorActivity::loop() {
     return;
   }
 
-  // Left/Right (scroll) and Up/Down (font size) are deliberately unbound. The
-  // server owns both the font size and how much content it sends, so there is
-  // nothing to scroll and nothing to resize on-device; Back and Confirm are the
-  // only inputs this app takes.
+  // Button actions: Left/Right/Up/Down send a command to config.actionUrl and
+  // show a brief ack, nothing more -- no re-poll, no rendering of the reply, no
+  // poll-timer reset. A press is a no-op when action_url isn't configured (the
+  // most common case today), matching the previous "deliberately unbound"
+  // behavior for servers that don't know about actions.
+  if ((state == SHOWING || state == ERROR) && !config.actionUrl.empty()) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      sendAction(ActionSlot::Up);
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      sendAction(ActionSlot::Down);
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      sendAction(ActionSlot::Left);
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      sendAction(ActionSlot::Right);
+    }
+  }
+
+  // Clear an expired action ack -- a one-shot timer, not a per-frame poll: once
+  // it fires, one more update erases the indicator and it stays cleared.
+  // Wrap-safe subtraction (millis() - start), matching lastPollMs/lastSpinnerUpdate.
+  if (actionAck[0] != '\0' && millis() - actionAckStartMs >= ACTION_ACK_MS) {
+    {
+      RenderLock lock(*this);
+      actionAck[0] = '\0';
+    }
+    requestUpdate();
+  }
 
   // Timed poll
   if (state == SHOWING || state == ERROR) {
@@ -157,17 +209,13 @@ void HttpMonitorActivity::fetch() {
   HTTPClient http;
   http.begin(config.url.c_str());
   http.setTimeout(config.timeoutMs);
-
-  if (!config.authHeader.empty()) {
-    const size_t colon = config.authHeader.find(':');
-    if (colon != std::string::npos) {
-      const std::string headerName = trim(config.authHeader.substr(0, colon));
-      const std::string headerValue = trim(config.authHeader.substr(colon + 1));
-      if (!headerName.empty()) {
-        http.addHeader(headerName.c_str(), headerValue.c_str());
-      }
-    }
-  }
+  // Bug fix: setTimeout() only bounds the socket read (_tcpTimeout); the TCP
+  // connect itself defaults to HTTPCLIENT_DEFAULT_TCP_TIMEOUT (5000ms)
+  // regardless of timeout_ms unless set explicitly. Without this an
+  // unreachable host blocked ~5s even with a much smaller configured
+  // timeout_ms, contradicting docs/http-monitor.md's description of the key.
+  http.setConnectTimeout(config.timeoutMs);
+  applyAuthHeader(http);
 
   // Everything below is computed into LOCAL state only — `render()` runs on its
   // own FreeRTOS task and reads `dashboard`/`state`/`fetchError`/`httpStatusCode`
@@ -197,6 +245,7 @@ void HttpMonitorActivity::fetch() {
       filter["title"] = true;
       filter["updated"] = true;
       filter["fontSize"] = true;
+      filter["rotation"] = true;
       filter["sections"][0]["heading"] = true;
       filter["sections"][0]["rows"][0]["type"] = true;
       filter["sections"][0]["rows"][0]["label"] = true;
@@ -223,7 +272,7 @@ void HttpMonitorActivity::fetch() {
         // The typed schema walk (type/align/bold/size, bar int-or-object, text,
         // glyphs, spacer/divider params, and all the caps) lives in the pure
         // header HttpMonitorSchema.h so the exact parse path is native-testable.
-        HttpMonitorSchema::apply(doc, next, config.title.c_str());
+        HttpMonitorSchema::apply(doc, next);
         ok = true;
       }
     }
@@ -291,6 +340,78 @@ void HttpMonitorActivity::fetch() {
 }
 
 // ----------------------------------------------------------------
+// Button actions
+// ----------------------------------------------------------------
+
+// Sets actionAck under a RenderLock and requests a repaint -- shared by the
+// "sending" / result / (loop()'s) "cleared" steps of a button press so each
+// one is a single, consistent commit-then-paint.
+void HttpMonitorActivity::setActionAck(const char* text) {
+  {
+    RenderLock lock(*this);
+    HttpMonitorSchema::copyBounded(actionAck, sizeof(actionAck), text);
+    actionAckStartMs = millis();
+  }
+  requestUpdate();
+}
+
+// A press sends one GET and shows a small "sent"/"failed" indicator -- no
+// re-poll, no rendering of the reply, no poll-timer reset. Blocking, same as
+// fetch(): this app has nothing else to do while it waits. Three panel
+// updates per press ("sending" -> result -> loop()'s later clear) is the
+// accepted cost of a deliberate user action -- commit 2b4c62a's refresh
+// budget targeted idle/automatic polling, not this.
+void HttpMonitorActivity::sendAction(ActionSlot slot) {
+  const int slotIdx = static_cast<int>(slot);
+  const std::string url = HttpMonitorConfig::actionUrlFor(config, slotIdx);
+  if (url.empty()) return;  // no action_url configured -- inert
+
+  const char* slotName = HttpMonitorConfig::ACTION_SLOT_NAMES[slotIdx];
+  char ack[24];
+
+  // InputManager::update() derives button edges by comparing instantaneous pin
+  // state to the last-seen state: a press+release entirely inside a blocking
+  // call (like the GET below) produces no event at all -- including Back. So a
+  // multi-second block here would make the device look frozen with no way out.
+  // Skipping the request outright when WiFi is down avoids that block in the
+  // common "radio asleep/out of range" case; fetch()'s timed poll already owns
+  // WiFi recovery (WifiSelectionActivity), which would be worse to hijack the
+  // screen with on a single button press.
+  if (WiFi.status() != WL_CONNECTED) {
+    snprintf(ack, sizeof(ack), "%s: no wifi", slotName);
+    setActionAck(ack);
+    return;
+  }
+
+  // render() runs on its own FreeRTOS task, so this paints WHILE loop() is
+  // blocked on the GET below -- it's what makes the freeze visible as "sending"
+  // rather than the device looking dead for up to timeout_ms.
+  snprintf(ack, sizeof(ack), "%s: sending", slotName);
+  setActionAck(ack);
+
+  HTTPClient http;
+  http.begin(url.c_str());
+  http.setTimeout(config.timeoutMs);
+  // setTimeout() only bounds the socket read (HTTPClient's _tcpTimeout); the
+  // TCP connect itself defaults to HTTPCLIENT_DEFAULT_TCP_TIMEOUT (5000ms)
+  // regardless of timeout_ms unless set explicitly here -- without this an
+  // unreachable host blocks 5s even with timeout_ms = 1000.
+  http.setConnectTimeout(config.timeoutMs);
+  applyAuthHeader(http);
+  const int code = http.GET();
+  http.end();
+
+  if (code >= 200 && code < 300) {
+    snprintf(ack, sizeof(ack), "%s: sent", slotName);
+  } else if (code > 0) {
+    snprintf(ack, sizeof(ack), "%s: HTTP %d", slotName, code);
+  } else {
+    snprintf(ack, sizeof(ack), "%s: failed", slotName);
+  }
+  setActionAck(ack);
+}
+
+// ----------------------------------------------------------------
 // Font size
 // ----------------------------------------------------------------
 
@@ -344,6 +465,12 @@ int HttpMonitorActivity::fontForSize(uint8_t sizeIdx) const {
 // ----------------------------------------------------------------
 
 void HttpMonitorActivity::render(RenderLock&&) {
+  // Server-driven orientation: `dashboard.reversed` flips the screen 180deg for
+  // a device mounted upside down. Restored to Portrait right after this frame's
+  // displayBuffer() (and again in onExit()) so no other activity inherits an
+  // upside-down renderer.
+  renderer.setOrientation(dashboard.reversed ? GfxRenderer::PortraitInverted : GfxRenderer::Portrait);
+
   renderer.clearScreen();
 
   switch (state) {
@@ -375,13 +502,37 @@ void HttpMonitorActivity::render(RenderLock&&) {
   } else {
     renderer.displayBuffer();
   }
+
+  renderer.setOrientation(GfxRenderer::Portrait);
+}
+
+// Centered SMALL text just above the hint bar; no-op when actionAck is empty.
+void HttpMonitorActivity::drawActionAck() {
+  if (actionAck[0] == '\0') return;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int y = pageHeight - metrics.buttonHintsHeight - lineH - 4;
+  // This band sits inside the content band (contentBottom = pageHeight -
+  // buttonHintsHeight - verticalSpacing, and verticalSpacing on some themes is
+  // smaller than lineH+4), so it can land on top of the dashboard's last drawn
+  // row. Clear it to white first -- same "fillRect(..., false)" pattern themes
+  // use to blank a band before drawing over it -- rather than shrinking the
+  // content band and relayouting the whole dashboard for a 1.5s indicator.
+  const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, actionAck);
+  const int padX = 6;
+  const int rectX = std::max(0, (pageWidth - textWidth) / 2 - padX);
+  const int rectW = std::min(pageWidth - rectX, textWidth + 2 * padX);
+  renderer.fillRect(rectX, y - 2, rectW, lineH + 4, false);
+  renderer.drawCenteredText(SMALL_FONT_ID, y, actionAck);
 }
 
 void HttpMonitorActivity::renderNoConfig() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "HTTP Monitor");
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, kDefaultTitle);
 
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 6;
   const int smallLineH = renderer.getLineHeight(SMALL_FONT_ID) + 4;
@@ -415,7 +566,8 @@ void HttpMonitorActivity::renderFetching() {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, config.title.c_str());
+  const char* title = dashboard.title[0] != '\0' ? dashboard.title : kDefaultTitle;
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, "Fetching...");
 }
 
@@ -423,7 +575,8 @@ void HttpMonitorActivity::renderError() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, config.title.c_str());
+  const char* title = dashboard.title[0] != '\0' ? dashboard.title : kDefaultTitle;
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title);
 
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 6;
   const int smallLineH = renderer.getLineHeight(SMALL_FONT_ID) + 2;
@@ -449,6 +602,8 @@ void HttpMonitorActivity::renderError() {
     y += smallLineH;
   }
 
+  drawActionAck();
+
   const auto labels = mappedInput.mapLabels("Back", "Retry", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
@@ -466,7 +621,7 @@ void HttpMonitorActivity::renderDashboard() {
   // monitor header — the dial + timestamp own that zone.
   const int headerY = metrics.topPadding;
   const int headerH = metrics.headerHeight;
-  const char* title = dashboard.title[0] != '\0' ? dashboard.title : config.title.c_str();
+  const char* title = dashboard.title[0] != '\0' ? dashboard.title : kDefaultTitle;
 
   const char* updated = dashboard.updated;
   const int updatedW = (updated[0] != '\0') ? renderer.getTextWidth(SMALL_FONT_ID, updated) : 0;
@@ -874,6 +1029,8 @@ void HttpMonitorActivity::renderDashboard() {
   if (dashboard.sections.empty() && dashboard.alerts.empty()) {
     renderer.drawCenteredText(UI_10_FONT_ID, (contentTop + contentBottom) / 2, "No data");
   }
+
+  drawActionAck();
 
   const auto labels = mappedInput.mapLabels("Back", "Refresh", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

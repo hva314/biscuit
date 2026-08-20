@@ -26,7 +26,6 @@ void test_defaults_when_keys_absent() {
   TEST_ASSERT_EQUAL(30, cfg.intervalSec);
   TEST_ASSERT_EQUAL(5000, cfg.timeoutMs);
   TEST_ASSERT_EQUAL(20, cfg.fullRefreshEvery);
-  TEST_ASSERT_EQUAL_STRING("HTTP Monitor", cfg.title.c_str());
   TEST_ASSERT_EQUAL_STRING("", cfg.authHeader.c_str());
 }
 
@@ -126,14 +125,6 @@ void test_url_length_is_bounded() {
   const std::string longUrl = "http://x/" + std::string(1000, 'a');
   TEST_ASSERT_TRUE(HttpMonitorConfig::parse(("url=" + longUrl + "\n").c_str(), cfg, err));
   TEST_ASSERT_TRUE(cfg.url.size() <= 256);
-}
-
-void test_title_length_is_bounded() {
-  Config cfg;
-  std::string err;
-  const std::string longTitle = std::string(1000, 'b');
-  TEST_ASSERT_TRUE(HttpMonitorConfig::parse(("url=http://a\ntitle=" + longTitle + "\n").c_str(), cfg, err));
-  TEST_ASSERT_TRUE(cfg.title.size() <= 64);
 }
 
 void test_auth_header_length_is_bounded() {
@@ -250,15 +241,99 @@ void test_whitespace_trimmed_key_and_value() {
   TEST_ASSERT_EQUAL_STRING("http://h", cfg.url.c_str());
 }
 
-// ---- title / auth_header ----
+// ---- action_url ----
 
-void test_title_and_auth_header_parsed() {
+void test_action_url_absent_defaults_empty() {
   Config cfg;
   std::string err;
-  TEST_ASSERT_TRUE(
-      HttpMonitorConfig::parse("url=http://i\ntitle = prod-1\nauth_header = Authorization: Bearer abc123\n", cfg, err));
-  TEST_ASSERT_EQUAL_STRING("prod-1", cfg.title.c_str());
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://a\n", cfg, err));
+  TEST_ASSERT_EQUAL_STRING("", cfg.actionUrl.c_str());
+}
+
+void test_action_url_parsed() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://a\naction_url = http://192.168.0.24:8777/cmd\n", cfg, err));
+  TEST_ASSERT_EQUAL_STRING("http://192.168.0.24:8777/cmd", cfg.actionUrl.c_str());
+}
+
+void test_action_url_trailing_slash_stripped() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://a\naction_url = http://192.168.0.24:8777/cmd/\n", cfg, err));
+  TEST_ASSERT_EQUAL_STRING("http://192.168.0.24:8777/cmd", cfg.actionUrl.c_str());
+}
+
+// ---- header injection: action_url must not smuggle a second HTTP header ----
+// Mirrors auth_header's guard exactly (test_auth_header_with_embedded_cr_rejected):
+// http.begin(url) puts action_url straight into the request line, so an embedded
+// '\r' surviving trim() (which only trims leading/trailing whitespace) could let
+// a crafted monitor.conf smuggle an extra header into every action request.
+void test_action_url_with_embedded_cr_rejected() {
+  Config cfg;
+  std::string err;
+  const std::string valueWithEmbeddedCr = "http://h/cmd\rX-Evil: 1";
+  const bool ok =
+      HttpMonitorConfig::parse(("url=http://a\naction_url = " + valueWithEmbeddedCr + "\n").c_str(), cfg, err);
+  TEST_ASSERT_TRUE(ok);  // url is still valid -- only action_url is rejected, not the whole file
+  TEST_ASSERT_EQUAL_STRING("", cfg.actionUrl.c_str());
+  // Rejected action_url means all four buttons stay inert, same as if it were
+  // never set.
+  TEST_ASSERT_EQUAL_STRING("", HttpMonitorConfig::actionUrlFor(cfg, 0).c_str());
+}
+
+// ---- header injection: url must not smuggle a second HTTP header either ----
+// Identical hole to action_url (same http.begin(url) sink in fetch()), so the
+// same guard applies: reject the value outright rather than strip. A rejected
+// url leaves it empty, so parse() fails with the existing "missing url" error --
+// the correct, already-tested visible outcome, not a new error path.
+void test_url_with_embedded_cr_fails_to_parse() {
+  Config cfg;
+  std::string err;
+  const std::string urlWithEmbeddedCr = "http://a\rX-Evil: 1";
+  const bool ok = HttpMonitorConfig::parse(("url = " + urlWithEmbeddedCr + "\n").c_str(), cfg, err);
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_TRUE(err.find("url") != std::string::npos);
+}
+
+void test_action_url_for_empty_when_action_url_absent() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://a\n", cfg, err);
+  TEST_ASSERT_EQUAL_STRING("", HttpMonitorConfig::actionUrlFor(cfg, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING("", HttpMonitorConfig::actionUrlFor(cfg, 1).c_str());
+  TEST_ASSERT_EQUAL_STRING("", HttpMonitorConfig::actionUrlFor(cfg, 2).c_str());
+  TEST_ASSERT_EQUAL_STRING("", HttpMonitorConfig::actionUrlFor(cfg, 3).c_str());
+}
+
+void test_action_url_for_builds_slot_urls() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://a\naction_url = http://h/cmd\n", cfg, err);
+  TEST_ASSERT_EQUAL_STRING("http://h/cmd/up", HttpMonitorConfig::actionUrlFor(cfg, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING("http://h/cmd/down", HttpMonitorConfig::actionUrlFor(cfg, 1).c_str());
+  TEST_ASSERT_EQUAL_STRING("http://h/cmd/left", HttpMonitorConfig::actionUrlFor(cfg, 2).c_str());
+  TEST_ASSERT_EQUAL_STRING("http://h/cmd/right", HttpMonitorConfig::actionUrlFor(cfg, 3).c_str());
+}
+
+// ---- auth_header ----
+
+void test_auth_header_parsed() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://i\nauth_header = Authorization: Bearer abc123\n", cfg, err));
   TEST_ASSERT_EQUAL_STRING("Authorization: Bearer abc123", cfg.authHeader.c_str());
+}
+
+// `title` is no longer a device-side key (the server owns the title outright),
+// but an SD card left over from before this change still has one — it must be
+// silently ignored like any other unknown key, not treated as a parse error.
+void test_title_key_still_parses_as_unknown() {
+  Config cfg;
+  std::string err;
+  const bool ok = HttpMonitorConfig::parse("url=http://i\ntitle = prod-1\n", cfg, err);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_STRING("http://i", cfg.url.c_str());
 }
 
 // ---- full_refresh_every ----
@@ -325,7 +400,6 @@ int main() {
   RUN_TEST(test_auth_header_with_embedded_cr_rejected);
   RUN_TEST(test_auth_header_without_embedded_cr_still_accepted);
   RUN_TEST(test_url_length_is_bounded);
-  RUN_TEST(test_title_length_is_bounded);
   RUN_TEST(test_auth_header_length_is_bounded);
   RUN_TEST(test_blank_lines_ignored);
   RUN_TEST(test_unknown_keys_ignored);
@@ -340,7 +414,15 @@ int main() {
   RUN_TEST(test_missing_url_is_fatal);
   RUN_TEST(test_empty_text_is_fatal_missing_url);
   RUN_TEST(test_whitespace_trimmed_key_and_value);
-  RUN_TEST(test_title_and_auth_header_parsed);
+  RUN_TEST(test_auth_header_parsed);
+  RUN_TEST(test_title_key_still_parses_as_unknown);
+  RUN_TEST(test_action_url_absent_defaults_empty);
+  RUN_TEST(test_action_url_parsed);
+  RUN_TEST(test_action_url_trailing_slash_stripped);
+  RUN_TEST(test_action_url_with_embedded_cr_rejected);
+  RUN_TEST(test_url_with_embedded_cr_fails_to_parse);
+  RUN_TEST(test_action_url_for_empty_when_action_url_absent);
+  RUN_TEST(test_action_url_for_builds_slot_urls);
   RUN_TEST(test_full_refresh_every_zero_disables);
   RUN_TEST(test_full_refresh_every_default);
   RUN_TEST(test_font_size_default_when_absent);

@@ -14,9 +14,7 @@ using namespace HttpMonitorPower;
 
 // ---- remainingMs: wrap-safe "how long until this deadline fires" ----
 
-void test_remaining_ms_not_yet_elapsed() {
-  TEST_ASSERT_EQUAL(400, remainingMs(/*elapsedMs=*/100, /*totalMs=*/500));
-}
+void test_remaining_ms_not_yet_elapsed() { TEST_ASSERT_EQUAL(400, remainingMs(/*elapsedMs=*/100, /*totalMs=*/500)); }
 
 void test_remaining_ms_zero_at_exact_boundary() {
   TEST_ASSERT_EQUAL(0, remainingMs(/*elapsedMs=*/500, /*totalMs=*/500));

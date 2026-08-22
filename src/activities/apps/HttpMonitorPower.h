@@ -25,22 +25,22 @@ inline unsigned long remainingMs(unsigned long elapsedMs, unsigned long totalMs)
 // thing read before the actual sleep call.
 struct SleepGuardInput {
   bool showingDashboard;              // state == SHOWING -- never sleep mid-fetch,
-                                       // mid-reconnect, or on the error/no-config/
-                                       // battery-critical screens
+                                      // mid-reconnect, or on the error/no-config/
+                                      // battery-critical screens
   bool actionAckPending;              // actionAck[0] != '\0' -- must clear on its
-                                       // own 1500ms schedule, not be delayed by sleep
+                                      // own 1500ms schedule, not be delayed by sleep
   bool renderBusy;                    // RenderLock::peek() -- a render is in
-                                       // progress or about to be; never straddle it
+                                      // progress or about to be; never straddle it
   bool wifiAssociated;                // WiFi.getMode() != WIFI_MODE_NULL -- manual
-                                       // esp_light_sleep_start() powers the modem
-                                       // outside any DTIM alignment (this tree never
-                                       // configures esp_pm/esp_wifi_set_ps for this
-                                       // path), so sleeping while associated risks a
-                                       // missed-beacon deauth. Only ever false once
-                                       // auto-drop has actually taken WiFi down.
+                                      // esp_light_sleep_start() powers the modem
+                                      // outside any DTIM alignment (this tree never
+                                      // configures esp_pm/esp_wifi_set_ps for this
+                                      // path), so sleeping while associated risks a
+                                      // missed-beacon deauth. Only ever false once
+                                      // auto-drop has actually taken WiFi down.
   bool wifiHoldActive;                // wifiHoldActive
   unsigned long wifiHoldRemainingMs;  // remainingMs(...) against wifi_hold_sec;
-                                       // meaningless (and ignored) when !wifiHoldActive
+                                      // meaningless (and ignored) when !wifiHoldActive
   unsigned long pollRemainingMs;      // remainingMs(...) against pollIntervalMs
   unsigned long sliceMs;              // the light-sleep slice length
 };

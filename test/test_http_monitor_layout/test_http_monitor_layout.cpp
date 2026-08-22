@@ -171,6 +171,50 @@ void test_entry_y_degenerate_inputs() {
   TEST_ASSERT_EQUAL(100, entryY(nullptr, /*i=*/2, /*contentTop=*/100));
 }
 
+// ---- computeHeaderLayout ----
+// Positions the far-right 24x24 wifi indicator, the `updated` timestamp just
+// left of it, the interval text left of that, and the remaining title zone --
+// shared verbatim by HttpMonitorActivity::renderDashboard() and
+// test_preview.cpp so the two can't drift apart (this is the anti-drift
+// mechanism the header math was pulled into this file for).
+
+void test_header_layout_places_icon_flush_right() {
+  const auto h = HttpMonitorLayout::computeHeaderLayout(/*pageWidth=*/480, /*sidePadding=*/20, /*intervalW=*/40,
+                                                        /*updatedW=*/60, /*iconSize=*/24, /*gap=*/8);
+  // iconX = 480 - 20 - 24 = 436
+  TEST_ASSERT_EQUAL(436, h.iconX);
+  // updatedX = 436 - 8 - 60 = 368
+  TEST_ASSERT_EQUAL(368, h.updatedX);
+  // intervalX = 368 - 8 - 40 = 320
+  TEST_ASSERT_EQUAL(320, h.intervalX);
+  // titleZone = 320 - 20 - 8 = 292
+  TEST_ASSERT_EQUAL(292, h.titleZone);
+}
+
+void test_header_layout_empty_updated_collapses_its_gap() {
+  const auto h = HttpMonitorLayout::computeHeaderLayout(480, 20, /*intervalW=*/40, /*updatedW=*/0, /*iconSize=*/24,
+                                                        /*gap=*/8);
+  TEST_ASSERT_EQUAL(436, h.iconX);
+  TEST_ASSERT_EQUAL(428, h.updatedX);   // 436 - 8 - 0
+  TEST_ASSERT_EQUAL(380, h.intervalX);  // 428 - 8 - 40
+  TEST_ASSERT_EQUAL(352, h.titleZone);  // 380 - 20 - 8
+}
+
+// A pathologically wide interval/updated pair (or a narrow page) must never
+// hand renderer.truncatedText() a negative width -- clamp to 0 rather than let
+// the caller index/overflow on it.
+void test_header_layout_titlezone_clamps_to_zero_when_it_would_go_negative() {
+  const auto h = HttpMonitorLayout::computeHeaderLayout(/*pageWidth=*/100, /*sidePadding=*/20, /*intervalW=*/200,
+                                                        /*updatedW=*/200, /*iconSize=*/24, /*gap=*/8);
+  TEST_ASSERT_EQUAL(0, h.titleZone);
+}
+
+void test_header_layout_degenerate_negative_page_width_never_indexes() {
+  const auto h = HttpMonitorLayout::computeHeaderLayout(/*pageWidth=*/-50, /*sidePadding=*/20, /*intervalW=*/40,
+                                                        /*updatedW=*/60, /*iconSize=*/24, /*gap=*/8);
+  TEST_ASSERT_TRUE(h.titleZone >= 0);
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -197,5 +241,9 @@ int main() {
   RUN_TEST(test_max_glyphs_clamps_run_to_band);
   RUN_TEST(test_entry_y_is_prefix_sum_from_content_top);
   RUN_TEST(test_entry_y_degenerate_inputs);
+  RUN_TEST(test_header_layout_places_icon_flush_right);
+  RUN_TEST(test_header_layout_empty_updated_collapses_its_gap);
+  RUN_TEST(test_header_layout_titlezone_clamps_to_zero_when_it_would_go_negative);
+  RUN_TEST(test_header_layout_degenerate_negative_page_width_never_indexes);
   return UNITY_END();
 }

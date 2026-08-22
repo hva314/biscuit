@@ -504,6 +504,7 @@ The error screen shows a bold headline, the detail message beneath it, and
 | Malformed JSON | `HTTP 200` | `JSON parse failed: <reason>` (the parser's own reason, e.g. `InvalidInput`) |
 | Body over 8 KB, or no `Content-Length` | `HTTP 200` | `Response too large or unknown length` |
 | WiFi unavailable | `Connection failed` | `WiFi not connected` |
+| WiFi auto-drop reconnect failed (only when `interval_sec` > 300 — see the power model in `http-monitor.md`) | `Connection failed` | `WiFi reconnect failed` |
 | Empty `sections` **and** empty `alerts` | *(not an error)* | The dashboard renders with the header and a centered `No data` |
 
 Two things worth designing around:

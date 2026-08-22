@@ -2,8 +2,10 @@
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <HalPowerManager.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_sleep.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -11,12 +13,14 @@
 #include <cstring>
 
 #include "HttpMonitorLayout.h"
+#include "HttpMonitorPower.h"
 #include "MappedInputManager.h"
 
 // Typed schema names used by renderDashboard()'s per-row dispatch.
 using HttpMonitorSchema::RowAlign;
 using HttpMonitorSchema::RowType;
 using HttpMonitorSchema::SIZE_INHERIT;
+#include "WifiCredentialStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -90,6 +94,12 @@ void HttpMonitorActivity::loadConfig() {
 // ----------------------------------------------------------------
 
 void HttpMonitorActivity::loop() {
+  // Reset every iteration -- see the header comment on sleptThisIteration.
+  // Only maybeLightSleep() (at the very bottom of this function) ever sets it
+  // true, and only when a slice actually ran, so every early return below
+  // (Back, NO_CONFIG, BATTERY_CRITICAL, ...) correctly leaves it false.
+  sleptThisIteration = false;
+
   // Back always wins, so input stays responsive even while a fetch is due.
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
@@ -100,29 +110,20 @@ void HttpMonitorActivity::loop() {
     return;
   }
 
-  // Liveness dial: advance the header hand every config.dialTickSec seconds while
-  // the dashboard is on screen (SHOWING only). The dial is drawn in
-  // renderDashboard(), so advancing it in FETCHING/ERROR would repaint a
-  // framebuffer whose visible content does not change — a full clearScreen+redraw
-  // with no visible effect (battery drain, panel wear, ghosting). The mutation
-  // runs under the RenderLock because the render task reads spinnerFrame, then a
-  // single redraw is requested.
-  //
-  // Each tick is a whole-panel e-ink update, so this loop is the app's dominant
-  // source of panel wear. dial_tick_sec = 0 switches it off completely, which is
-  // what makes a static dashboard leave the panel genuinely idle.
-  if (state == SHOWING && config.dialTickSec > 0) {
-    const unsigned long now = millis();
-    const unsigned long tickMs = static_cast<unsigned long>(config.dialTickSec) * 1000UL;
-    if (now - lastSpinnerUpdate >= tickMs) {
-      lastSpinnerUpdate = now;
-      {
-        RenderLock lock(*this);
-        spinnerFrame = (spinnerFrame + 1) % 12;
-      }
+  if (state == BATTERY_CRITICAL) {
+    // Recovery: USB power removes the brownout risk that put us here, and
+    // requiring a restart to resume monitoring would be needlessly hostile
+    // for an unattended wall panel someone just walked over and plugged in.
+    if (gpio.isUsbConnected()) {
+      state = hasDashboard ? SHOWING : IDLE;
+      lastPollMs = millis();
       requestUpdate();
     }
+    return;
   }
+
+  checkBatteryCritical();
+  if (state == BATTERY_CRITICAL) return;
 
   if (state == IDLE) {
     lastPollMs = millis();
@@ -161,13 +162,39 @@ void HttpMonitorActivity::loop() {
 
   // Clear an expired action ack -- a one-shot timer, not a per-frame poll: once
   // it fires, one more update erases the indicator and it stays cleared.
-  // Wrap-safe subtraction (millis() - start), matching lastPollMs/lastSpinnerUpdate.
+  // Wrap-safe subtraction (millis() - start), matching lastPollMs.
   if (actionAck[0] != '\0' && millis() - actionAckStartMs >= ACTION_ACK_MS) {
     {
       RenderLock lock(*this);
       actionAck[0] = '\0';
     }
     requestUpdate();
+  }
+
+  // Clear an expired WiFi hold -- also one-shot, matching the actionAck clear
+  // above (and, like it, the write is under a RenderLock -- the render task
+  // reads wifiHoldActive without one to pick the header glyph). Also drops
+  // WiFi right here rather than waiting for the next fetch() to notice: fetch()
+  // only shuts WiFi down after a poll completes, which could be up to a full
+  // interval_sec away, and until then the header glyph would fall through to
+  // AlwaysOn (WiFi genuinely is still up) even though auto-drop is armed --
+  // indistinguishable from a non-auto-drop config at a glance. Dropping it here
+  // instead makes the glyph switch straight to Dropped as soon as the hold
+  // actually ends. Not gated on `state == SHOWING`: a hold can be armed from
+  // ERROR too (action buttons work in ERROR), and the battery/panel-wear
+  // reasoning for dropping promptly applies regardless of what's on screen.
+  if (wifiHoldActive) {
+    const unsigned long holdMs = static_cast<unsigned long>(config.wifiHoldSec) * 1000UL;
+    if (millis() - wifiHoldStartMs >= holdMs) {
+      {
+        RenderLock lock(*this);
+        wifiHoldActive = false;
+      }
+      if (HttpMonitorConfig::autoDropWifi(config)) {
+        RADIO.shutdown();
+      }
+      if (state == SHOWING) requestUpdate();
+    }
   }
 
   // Timed poll
@@ -180,6 +207,159 @@ void HttpMonitorActivity::loop() {
       fetch();
     }
   }
+
+  maybeLightSleep();
+}
+
+// Throttled battery-critical check (BATTERY_CHECK_INTERVAL_MS): getBattery
+// Percentage() is uncached on X4 (reads the ADC every call; X3 caches for
+// BATTERY_POLL_MS internally, but this file can't assume which board it's on),
+// so this must not run every loop() iteration. config.batteryMinPct == 0
+// disables the guard outright -- same convention as autoDropWifi().
+void HttpMonitorActivity::checkBatteryCritical() {
+  if (config.batteryMinPct <= 0) return;
+
+  const unsigned long now = millis();
+  if (now - lastBatteryCheckMs < BATTERY_CHECK_INTERVAL_MS) return;
+  lastBatteryCheckMs = now;
+
+  // USB present, or a reading above the threshold, resets the streak -- only
+  // CONSECUTIVE low readings count; see the field comment in the header for
+  // why a single sample must not latch the (irreversible without USB) guard.
+  if (gpio.isUsbConnected() || powerManager.getBatteryPercentage() > static_cast<uint16_t>(config.batteryMinPct)) {
+    batteryCriticalConsecutiveLowReads = 0;
+    return;
+  }
+
+  if (++batteryCriticalConsecutiveLowReads < BATTERY_CRITICAL_CONSECUTIVE_READS) return;
+
+  RADIO.shutdown();
+  {
+    // Matches fetch()'s convention: `state` (read by the render task without a
+    // lock -- ActivityManager.cpp) is only ever written under a RenderLock.
+    RenderLock lock(*this);
+    state = BATTERY_CRITICAL;
+  }
+  // Immediate, not deferred: this terminal screen exists specifically so a
+  // brownout doesn't happen mid-refresh, so it must actually get painted
+  // before anything else (including main.cpp's own auto-sleep check on the
+  // next iteration) has a chance to act on the low battery first.
+  requestUpdate(true);
+}
+
+// ----------------------------------------------------------------
+// R1: sliced light sleep
+// ----------------------------------------------------------------
+
+// Enters a single SLICE_MS light-sleep slice when it's genuinely safe to.
+//
+// Render-in-progress guard (the hazard: esp_light_sleep_start() mid-SPI-
+// transaction or mid-e-ink-update could leave the panel in a bad state).
+// RenderLock::peek() is read as the LAST thing before the sleep calls, with
+// nothing else executed in between -- same pattern EpubReaderActivity.cpp
+// already uses to skip an action while a render is busy. On this single-core
+// ESP32-C3 target, loop() and the render task can never truly run
+// simultaneously; the render task can only get CPU time via a preemptive
+// context switch (a FreeRTOS tick interrupt, since both run at priority 1).
+// For light sleep to straddle a render, the render task would have to be
+// notified-but-not-yet-scheduled at the exact moment peek() is read (which
+// peek() can't see -- it only detects a render that has already taken the
+// RenderLock), AND a tick interrupt would have to land in the handful of
+// instructions between that read and esp_light_sleep_start(). That window is
+// several orders of magnitude smaller than a FreeRTOS tick period, so the
+// residual risk is the same class -- and same order of magnitude -- as the
+// one EpubReaderActivity already accepts with the identical pattern. A
+// blocking RenderLock acquire here would close even that sliver, but at the
+// cost of stalling loop() (and therefore input handling) for the length of
+// whatever render is in progress, which given e-ink refreshes can take
+// seconds -- a strictly worse trade for a wall-mounted dashboard than the
+// tiny residual race.
+//
+// millis() across light sleep: every timer in this file (lastPollMs,
+// wifiHoldStartMs, actionAckStartMs, lastBatteryCheckMs) depends on millis()
+// (backed by esp_timer_get_time(), see esp32-hal-misc.c) continuing to advance
+// correctly across esp_light_sleep_start(). ESP-IDF's esp_timer is documented
+// to resynchronize against the RTC on wake specifically so this holds, but
+// that isn't something this native-only session can verify on real hardware.
+// TREAT AS AN ON-DEVICE VERIFICATION ITEM: confirm poll cadence and the WiFi
+// hold duration stay honest over several intervals. If it ever turns out NOT
+// to hold, every timer here already reads `millis() - start >= duration`
+// rather than an absolute deadline, which is the cheap half of a fix; the
+// other half (measuring actual elapsed sleep time via esp_timer_get_time()
+// before/after each slice and folding the delta back into the *Ms fields)
+// is deliberately NOT added here -- it would be unverifiable complexity
+// against a problem not yet confirmed to exist.
+//
+// Button-sampling arithmetic (why SLICE_MS is 40): let P be the effective
+// main-loop sampling period while idle. main.cpp calls activityManager.loop()
+// and checks skipLoopDelay() immediately after in the SAME iteration --
+// skipLoopDelay() here returns sleptThisIteration (set below, only when a
+// slice actually ran), so on every iteration that sleeps, main.cpp takes its
+// yield() branch instead of stacking its own delay(10)/delay(50) on top of
+// the slice. That branch also forces full clock for the remainder of the
+// iteration (see skipLoopDelay()'s doc comment for why that's cheap and
+// intentional), so P is just the sleep itself plus whatever small amount of
+// full-clock work the rest of loop() and main.cpp's own per-iteration
+// housekeeping do before the next slice starts -- call that overhead ~5ms
+// (an estimate; not something this native-only session can measure). So
+// P ~= SLICE_MS + 5ms = 45ms, down from ~90ms when main.cpp's 50ms idle delay
+// was still stacking on top of every slice.
+//
+// InputManager::update() only commits a press once TWO consecutive samples,
+// >DEBOUNCE_DELAY (5ms) apart, see the same held state -- a state change
+// alone just resets the debounce clock without committing anything. Given
+// sampling instants spaced P apart at an arbitrary phase relative to the
+// physical press, the worst case (button makes contact just after a sample)
+// needs the press held across not one but two full periods to guarantee a
+// commit regardless of phase: d_worst ~= 2P.
+//   - Original SLICE_MS=200, stacked with main.cpp's 50ms delay: P~=250ms,
+//     d_worst~=500ms -- short taps, Back included, produced no event at all.
+//   - SLICE_MS=40, still stacked with the 50ms delay: P~=90ms, d_worst~=180ms
+//     -- still above a ~100ms illustrative tap in the strict worst case.
+//   - SLICE_MS=40, with the 50ms delay replaced by skipLoopDelay()'s yield():
+//     P~=45ms, d_worst~=90ms -- comfortably under a ~100ms tap, with margin.
+// This is strictly better on both axes, not a responsiveness/power tradeoff:
+// the 50ms idle delay was 10MHz-active time (dropping it removes awake time
+// AND shrinks the sampling period), whereas the slice itself is genuine light
+// sleep (~1mA-class) either way.
+void HttpMonitorActivity::maybeLightSleep() {
+  const unsigned long now = millis();
+  const unsigned long holdMs = static_cast<unsigned long>(config.wifiHoldSec) * 1000UL;
+
+  HttpMonitorPower::SleepGuardInput in{};
+  in.showingDashboard = (state == SHOWING);
+  in.actionAckPending = (actionAck[0] != '\0');
+  in.wifiAssociated = (WiFi.getMode() != WIFI_MODE_NULL);
+  in.wifiHoldActive = wifiHoldActive;
+  in.wifiHoldRemainingMs = wifiHoldActive ? HttpMonitorPower::remainingMs(now - wifiHoldStartMs, holdMs) : 0UL;
+  in.pollRemainingMs = HttpMonitorPower::remainingMs(now - lastPollMs, pollIntervalMs);
+  in.sliceMs = SLICE_MS;
+  // renderBusy MUST be the last field read, immediately before the guard
+  // check below -- see the render-in-progress reasoning above.
+  in.renderBusy = RenderLock::peek();
+
+  if (!HttpMonitorPower::canLightSleep(in)) return;
+
+  esp_sleep_enable_timer_wakeup(SLICE_US);
+  esp_light_sleep_start();
+  // The timer wakeup source persists once armed -- esp_sleep_enable_timer_
+  // wakeup() is a one-way "arm", not a per-call configuration, and nothing
+  // else in this tree ever calls esp_sleep_disable_wakeup_source(). Left
+  // armed, EVERY later esp_deep_sleep_start() (main.cpp's enterDeepSleep())
+  // would also wake on this same SLICE_MS-class RTC timer. On battery that's
+  // masked by the battery-latch MOSFET cutting power outright, but on USB the
+  // MCU stays powered through deep sleep, so it would wake and reboot
+  // ~SLICE_MS after every single deep sleep -- a permanent reboot loop on exactly the
+  // USB-powered wall panel this feature targets. Disarm it the moment this
+  // slice is done; see also HalPowerManager::startDeepSleep()'s defensive
+  // disable for the same source.
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+
+  // A slice actually ran -- skipLoopDelay() reads this back in the SAME
+  // main.cpp iteration to skip main.cpp's own redundant idle delay. See the
+  // arithmetic above and skipLoopDelay()'s doc comment for why this must stay
+  // conditional on having actually slept.
+  sleptThisIteration = true;
 }
 
 // ----------------------------------------------------------------
@@ -187,23 +367,63 @@ void HttpMonitorActivity::loop() {
 // ----------------------------------------------------------------
 
 void HttpMonitorActivity::fetch() {
+  // Restore full CPU clock for this whole blocking window -- WiFi (steady-state
+  // or reconnectWifiHeadless() below) and the HTTP GET further down both need
+  // well above LOW_POWER_FREQ (ESP32 WiFi's RF/MAC layer needs ~80MHz+). R3's
+  // allowPowerSaving() lets main.cpp downclock while genuinely idle between
+  // polls, and once auto-drop has taken WiFi to WIFI_MODE_NULL, HalPowerManager's
+  // WiFi guard (HalPowerManager.cpp) no longer blocks that downclock -- so by the
+  // time a poll fires, the CPU can genuinely be sitting at 10MHz. A direct call,
+  // not HalPowerManager::Lock: the render task already holds a Lock for the
+  // duration of every render (ActivityManager.cpp), and this multi-second fetch()
+  // can plausibly overlap one -- Lock is one-holder-at-a-time (HalPowerManager.cpp),
+  // so a second acquirer would log "Lock already held, ignore" and get
+  // valid=false. setPowerSaving(false) is idempotent and cannot contend; nothing
+  // re-downclocks until main.cpp's loop-bottom, which only runs after
+  // activityManager.loop() -- and therefore this whole function -- has returned.
+  powerManager.setPowerSaving(false);
+
   if (WiFi.status() != WL_CONNECTED) {
-    RADIO.ensureWifi();
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                           [this](const ActivityResult& result) {
-                             if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
-                               {
-                                 RenderLock lock(*this);
-                                 fetchError = "WiFi not connected";
-                                 httpStatusCode = 0;
-                                 state = ERROR;
+    if (!HttpMonitorConfig::autoDropWifi(config)) {
+      // Human-present path (interval_sec <= AUTO_DROP_MIN_INTERVAL_SEC): keep
+      // today's exact interactive-picker behavior unchanged.
+      RADIO.ensureWifi();
+      startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+                                 {
+                                   RenderLock lock(*this);
+                                   fetchError = "WiFi not connected";
+                                   httpStatusCode = 0;
+                                   state = ERROR;
+                                 }
+                                 requestUpdate();
+                               } else {
+                                 fetch();  // retry now that WiFi is up
                                }
-                               requestUpdate();
-                             } else {
-                               fetch();  // retry now that WiFi is up
-                             }
-                           });
-    return;
+                             });
+      return;
+    }
+
+    // Auto-drop path: WiFi is expected to be down between polls -- reconnect
+    // headlessly and bounded. MUST NOT push WifiSelectionActivity here: an
+    // unattended wall panel that pushes an interactive picker sits there until
+    // someone walks over, and since that activity doesn't override
+    // preventAutoSleep(), the device would then auto-sleep to a full power-off
+    // needing a physical button press. A failed reconnect falls through to
+    // ERROR and the existing "Timed poll" branch in loop() retries next interval.
+    if (!reconnectWifiHeadless(WIFI_RECONNECT_TIMEOUT_MS, /*showAck=*/false)) {
+      {
+        RenderLock lock(*this);
+        fetchError = "WiFi reconnect failed";
+        httpStatusCode = 0;
+        state = ERROR;
+      }
+      requestUpdate();
+      RADIO.shutdown();  // nothing to hold onto; harmless if already down
+      return;
+    }
+    // Fall through: WiFi is now up, continue to the GET below.
   }
 
   HTTPClient http;
@@ -294,7 +514,6 @@ void HttpMonitorActivity::fetch() {
   // makes the error -> same-dashboard transition repaint instead of being skipped
   // as "unchanged".
   bool contentChanged = false;
-  const bool dashboardIsNew = ok && displayedState != SHOWING;
   {
     RenderLock lock(*this);
     if (ok) {
@@ -329,14 +548,84 @@ void HttpMonitorActivity::fetch() {
       }
     }
   }
-  // Restart the dial's clock from the moment the dashboard first appears.
-  // lastSpinnerUpdate starts at 0, so without this the very first loop() after a
-  // fetch slower than dial_tick_sec sees an already-elapsed interval and ticks
-  // immediately — a second whole-panel update right on top of the one that just
-  // drew the dashboard. Only loop() touches this, so it needs no RenderLock.
-  if (dashboardIsNew) lastSpinnerUpdate = millis();
 
   if (contentChanged) requestUpdate();
+
+  // R2 auto-drop: WiFi is only ever kept up between polls for two reasons --
+  // a short-poll config (autoDropWifi() false) or an active post-press hold.
+  // Neither applies here, so drop it. This also clears the WIFI_MODE_NULL gate
+  // in HalPowerManager::setPowerSaving() that otherwise blocks downclocking --
+  // R3's allowPowerSaving() override only pays off once WiFi actually goes down.
+  if (HttpMonitorConfig::autoDropWifi(config) && !wifiHoldActive) {
+    RADIO.shutdown();
+  }
+}
+
+// ----------------------------------------------------------------
+// Headless WiFi reconnect
+// ----------------------------------------------------------------
+
+// Reconnects to the last-known network without any UI -- for the auto-drop
+// path only. Reproduces (does not call -- attemptConnection() is private and
+// non-static) the WiFi.mode(WIFI_STA)/hostname/WiFi.begin() body of
+// WifiSelectionActivity::attemptConnection(). Blocking, bounded by timeoutMs,
+// the same pattern fetch()/sendAction() already use for their HTTP calls --
+// this app has nothing else to do while it waits. When showAck is true (only
+// from sendAction()'s user-initiated path -- see the header comment for why
+// fetch()'s background poll passes false), paints a "connecting" indicator via
+// setActionAck() BEFORE the blocking wait so it stays visible on the render
+// task exactly as sendAction() already documents.
+bool HttpMonitorActivity::reconnectWifiHeadless(unsigned long timeoutMs, bool showAck) {
+  RADIO.ensureWifi();
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  if (showAck) setActionAck("wifi: connecting");
+
+  std::string ssid;
+  std::string password;
+  {
+    // WIFI_STORE.loadFromFile() touches SD over shared SPI -- must be under a
+    // RenderLock, matching WifiSelectionActivity::onEnter()'s identical load.
+    RenderLock lock(*this);
+    WIFI_STORE.loadFromFile();
+    ssid = WIFI_STORE.getLastConnectedSsid();
+    if (!ssid.empty()) {
+      if (const auto* cred = WIFI_STORE.findCredential(ssid)) {
+        password = cred->password;
+      }
+    }
+  }
+  if (ssid.empty()) {
+    if (showAck) setActionAck("wifi: no saved network");
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  // Same hostname WifiSelectionActivity::attemptConnection() sets, so routers
+  // show "CrossPoint-Reader-AABBCCDDEEFF" regardless of which path connected.
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  const String hostname = "CrossPoint-Reader-" + mac;
+  WiFi.setHostname(hostname.c_str());
+  if (!password.empty()) {
+    WiFi.begin(ssid.c_str(), password.c_str());
+  } else {
+    WiFi.begin(ssid.c_str());
+  }
+
+  const unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+    delay(100);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (showAck) setActionAck("wifi: connect failed");
+    return false;
+  }
+
+  RenderLock lock(*this);
+  WIFI_STORE.setLastConnectedSsid(ssid);
+  return true;
 }
 
 // ----------------------------------------------------------------
@@ -366,6 +655,12 @@ void HttpMonitorActivity::sendAction(ActionSlot slot) {
   const std::string url = HttpMonitorConfig::actionUrlFor(config, slotIdx);
   if (url.empty()) return;  // no action_url configured -- inert
 
+  // Same full-clock restore as fetch() -- see its comment. Covers
+  // reconnectWifiHeadless() below (including its internal delay(100) wait loop)
+  // and the HTTP GET further down; placed after the inert-button early return
+  // so a no-op press touches nothing.
+  powerManager.setPowerSaving(false);
+
   const char* slotName = HttpMonitorConfig::ACTION_SLOT_NAMES[slotIdx];
   char ack[24];
 
@@ -373,14 +668,30 @@ void HttpMonitorActivity::sendAction(ActionSlot slot) {
   // state to the last-seen state: a press+release entirely inside a blocking
   // call (like the GET below) produces no event at all -- including Back. So a
   // multi-second block here would make the device look frozen with no way out.
-  // Skipping the request outright when WiFi is down avoids that block in the
-  // common "radio asleep/out of range" case; fetch()'s timed poll already owns
-  // WiFi recovery (WifiSelectionActivity), which would be worse to hijack the
-  // screen with on a single button press.
+  // Non-auto-drop config: skip the request outright when WiFi is down (same as
+  // before this feature existed) -- fetch()'s timed poll already owns WiFi
+  // recovery (WifiSelectionActivity) for that config, which would be worse to
+  // hijack the screen with on a single button press. Auto-drop config: WiFi
+  // being down between polls is the expected steady state, so a press headlessly
+  // reconnects (bounded, same blocking category as the GET immediately below,
+  // and showAck=true since this IS the user-initiated path) rather than
+  // silently doing nothing.
   if (WiFi.status() != WL_CONNECTED) {
-    snprintf(ack, sizeof(ack), "%s: no wifi", slotName);
-    setActionAck(ack);
-    return;
+    if (!HttpMonitorConfig::autoDropWifi(config)) {
+      snprintf(ack, sizeof(ack), "%s: no wifi", slotName);
+      setActionAck(ack);
+      return;
+    }
+    if (!reconnectWifiHeadless(WIFI_RECONNECT_TIMEOUT_MS, /*showAck=*/true)) {
+      snprintf(ack, sizeof(ack), "%s: no wifi", slotName);
+      setActionAck(ack);
+      // Don't leave the radio half-up (reconnectWifiHeadless() already called
+      // RADIO.ensureWifi()) blocking HalPowerManager's downclock gate until
+      // the next successful poll -- same cleanup fetch()'s own failure branch
+      // already does.
+      RADIO.shutdown();
+      return;
+    }
   }
 
   // render() runs on its own FreeRTOS task, so this paints WHILE loop() is
@@ -409,6 +720,17 @@ void HttpMonitorActivity::sendAction(ActionSlot slot) {
     snprintf(ack, sizeof(ack), "%s: failed", slotName);
   }
   setActionAck(ack);
+
+  // Arm/re-arm the post-press hold: a directional press is deliberate user
+  // interaction, so it keeps WiFi up through wifi_hold_sec rather than letting
+  // fetch() drop it again on the very next poll. A further press before the
+  // hold expires re-arms it -- this runs on every send, not just the branch
+  // above that had to reconnect first.
+  if (HttpMonitorConfig::autoDropWifi(config)) {
+    RenderLock lock(*this);
+    wifiHoldActive = true;
+    wifiHoldStartMs = millis();
+  }
 }
 
 // ----------------------------------------------------------------
@@ -487,6 +809,9 @@ void HttpMonitorActivity::render(RenderLock&&) {
     case ERROR:
       renderError();
       break;
+    case BATTERY_CRITICAL:
+      renderBatteryCritical();
+      break;
   }
 
   // The periodic de-ghost pass must be a FULL_REFRESH, not a HALF_REFRESH. The X3
@@ -526,6 +851,49 @@ void HttpMonitorActivity::drawActionAck() {
   const int rectW = std::min(pageWidth - rectX, textWidth + 2 * padX);
   renderer.fillRect(rectX, y - 2, rectW, lineH + 4, false);
   renderer.drawCenteredText(SMALL_FONT_ID, y, actionAck);
+}
+
+// Vector wifi glyph in the x,y..+24,+24 header corner: a dot (filled for
+// AlwaysOn/Held, outline for Dropped) plus two signal arcs above it, following
+// the drawArc-quadrant precedent of drawRoundedRect() / BaseTheme::
+// drawBatteryIcon(). No bitmap asset: wifi.h is 32x32 (wrong size) and a third
+// static-array copy would cost more flash than this costs cycles. Dropped adds
+// a diagonal slash through the whole glyph; Held adds a short underscore bar
+// beneath the dot.
+void HttpMonitorActivity::drawWifiIndicator(int x, int y, WifiIndicator wifiState) {
+  constexpr int SIZE = 24;
+  constexpr int DOT_RADIUS = 2;
+  constexpr int ARC1_RADIUS = 7;
+  constexpr int ARC2_RADIUS = 11;
+  constexpr int ARC_STROKE = 2;
+  const int cx = x + SIZE / 2;
+  const int cy = y + SIZE - 6;
+
+  if (wifiState == WifiIndicator::Dropped) {
+    for (int q = 0; q < 4; ++q) {
+      const int xDir = (q & 1) ? 1 : -1;
+      const int yDir = (q & 2) ? 1 : -1;
+      renderer.drawArc(DOT_RADIUS, cx, cy, xDir, yDir, 1, true);  // outline dot
+    }
+  } else {
+    for (int q = 0; q < 4; ++q) {
+      const int xDir = (q & 1) ? 1 : -1;
+      const int yDir = (q & 2) ? 1 : -1;
+      renderer.drawArc(DOT_RADIUS, cx, cy, xDir, yDir, DOT_RADIUS, true);  // filled dot
+    }
+  }
+
+  // Two signal arcs, upper quadrants only (yDir=-1), one per side.
+  renderer.drawArc(ARC1_RADIUS, cx, cy, -1, -1, ARC_STROKE, true);
+  renderer.drawArc(ARC1_RADIUS, cx, cy, 1, -1, ARC_STROKE, true);
+  renderer.drawArc(ARC2_RADIUS, cx, cy, -1, -1, ARC_STROKE, true);
+  renderer.drawArc(ARC2_RADIUS, cx, cy, 1, -1, ARC_STROKE, true);
+
+  if (wifiState == WifiIndicator::Dropped) {
+    renderer.drawLine(x + 1, y + 1, x + SIZE - 2, y + SIZE - 2, ARC_STROKE, true);
+  } else if (wifiState == WifiIndicator::Held) {
+    renderer.drawLine(cx - 6, y + SIZE - 1, cx + 6, y + SIZE - 1, ARC_STROKE, true);
+  }
 }
 
 void HttpMonitorActivity::renderNoConfig() {
@@ -608,6 +976,38 @@ void HttpMonitorActivity::renderError() {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
+// Terminal screen: no polling, no WiFi, and (per preventAutoSleep()) the
+// device will auto-sleep on its own normal timeout rather than staying
+// resident here. Visual precedent: SleepActivity::renderStatusSleepScreen()
+// (boot_sleep/SleepActivity.cpp) -- centered title + a battery bar/percentage.
+void HttpMonitorActivity::renderBatteryCritical() {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 90, "Battery critical", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 60, "Monitoring stopped");
+
+  const uint16_t battPct = powerManager.getBatteryPercentage();
+  constexpr int barW = 200;
+  constexpr int barH = 8;
+  const int barX = (pageWidth - barW) / 2;
+  const int barY = pageHeight / 2 - 10;
+  renderer.drawRect(barX, barY, barW, barH, true);
+  const int fillW = (barW - 4) * battPct / 100;
+  if (fillW > 0) {
+    renderer.fillRect(barX + 2, barY + 2, fillW, barH - 4, true);
+  }
+
+  char battStr[8];
+  snprintf(battStr, sizeof(battStr), "%d%%", battPct);
+  renderer.drawCenteredText(SMALL_FONT_ID, barY + 16, battStr);
+
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 50, "Connect USB power to resume");
+
+  const auto labels = mappedInput.mapLabels("Back", "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
 void HttpMonitorActivity::renderDashboard() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
@@ -615,56 +1015,58 @@ void HttpMonitorActivity::renderDashboard() {
 
   // ---- Header: the dashboard header is a status bar, rendered explicitly rather
   // than via GUI.drawHeader() (which centers the title and paints the battery on
-  // the far right). Title sits LEFT (UI_12 BOLD), the `updated` timestamp is
-  // right-aligned in SMALL just left of the far-right 24x24 corner reserved for
-  // the liveness dial (drawn from loop(), step 6). The battery is dropped for the
-  // monitor header — the dial + timestamp own that zone.
+  // the far right). One line, left to right: title (UI_12 BOLD, truncated) ...
+  // poll interval ... `updated` timestamp (both SMALL) ... the far-right 24x24
+  // wifi indicator. The battery is dropped for the monitor header — this zone
+  // is server-liveness real estate instead.
+  //
+  // Positioning is HttpMonitorLayout::computeHeaderLayout() — shared verbatim
+  // with test_preview.cpp so the two can't silently drift apart; only the wifi
+  // glyph's actual drawing primitives differ between renderers.
   const int headerY = metrics.topPadding;
   const int headerH = metrics.headerHeight;
   const char* title = dashboard.title[0] != '\0' ? dashboard.title : kDefaultTitle;
 
   const char* updated = dashboard.updated;
   const int updatedW = (updated[0] != '\0') ? renderer.getTextWidth(SMALL_FONT_ID, updated) : 0;
-  constexpr int DIAL_SIZE = 24;
-  const int dialX = pageWidth - metrics.contentSidePadding - DIAL_SIZE;  // 436 on X4
-  const int updatedX = dialX - 8 - updatedW;                             // timestamp right edge, 8px clear of the dial
-  const int titleZone = pageWidth - 2 * metrics.contentSidePadding - updatedW - DIAL_SIZE - 2 * 8;
+
+  char intervalBuf[16];
+  snprintf(intervalBuf, sizeof(intervalBuf), "%ds", config.intervalSec);
+  const int intervalW = renderer.getTextWidth(SMALL_FONT_ID, intervalBuf);
+
+  constexpr int WIFI_ICON_SIZE = 24;
+  constexpr int HEADER_GAP = 8;
+  const auto headerLayout = HttpMonitorLayout::computeHeaderLayout(pageWidth, metrics.contentSidePadding, intervalW,
+                                                                   updatedW, WIFI_ICON_SIZE, HEADER_GAP);
 
   const int titleLineH = renderer.getLineHeight(UI_12_FONT_ID);
   const int titleY = headerY + (headerH - titleLineH) / 2;
-  const std::string titleStr = renderer.truncatedText(UI_12_FONT_ID, title, titleZone, EpdFontFamily::BOLD);
+  const std::string titleStr =
+      renderer.truncatedText(UI_12_FONT_ID, title, headerLayout.titleZone, EpdFontFamily::BOLD);
   renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, titleY, titleStr.c_str(), true, EpdFontFamily::BOLD);
+
+  const int smallY = headerY + (headerH - renderer.getLineHeight(SMALL_FONT_ID)) / 2;
+  renderer.drawText(SMALL_FONT_ID, headerLayout.intervalX, smallY, intervalBuf);
   if (updated[0] != '\0') {
-    const int updatedY = headerY + (headerH - renderer.getLineHeight(SMALL_FONT_ID)) / 2;
-    renderer.drawText(SMALL_FONT_ID, updatedX, updatedY, updated);
+    renderer.drawText(SMALL_FONT_ID, headerLayout.updatedX, smallY, updated);
   }
 
-  // Liveness dial in the reserved 24x24 corner: a static ring (radius 10, 1px)
-  // plus a 2px hand pointing at one of 12 precomputed 30° positions. loop()
-  // advances spinnerFrame 1Hz; render() clears the framebuffer first, so the
-  // hand is repainted (no in-frame ghost) and dialCleanCountdown keeps the
-  // physical display clean via a periodic HALF_REFRESH. drawArc() paints a
-  // single quadrant annulus, so four calls (one per sign pair) form the ring.
-  {
-    static constexpr int DIAL_RADIUS = 10;
-    // 12 second-hand positions, 30° apart, precomputed so render needs no trig:
-    // index 0 = 12 o'clock, then clockwise. |dx,dy| ≈ 8 in every direction.
-    static constexpr struct {
-      int dx;
-      int dy;
-    } kHandSteps[12] = {
-        {0, -8}, {4, -7}, {7, -4}, {8, 0}, {7, 4}, {4, 7}, {0, 8}, {-4, 7}, {-7, 4}, {-8, 0}, {-7, -4}, {-4, -7},
-    };
-    const int ccx = dialX + DIAL_SIZE / 2;
-    const int ccy = headerY + headerH / 2;
-    for (int q = 0; q < 4; ++q) {
-      const int xDir = (q & 1) ? 1 : -1;
-      const int yDir = (q & 2) ? 1 : -1;
-      renderer.drawArc(DIAL_RADIUS, ccx, ccy, xDir, yDir, 1, true);
+  // Wifi indicator, in the reserved 24x24 corner. AlwaysOn when auto-drop is
+  // off; otherwise Held while the post-press hold is active, else Dropped
+  // whenever WiFi isn't currently connected (the steady state between polls).
+  // WiFi.status() is a plain read of driver-internal state, safe to call from
+  // this render task the same way fetch()/sendAction() already call it from
+  // the loop task.
+  WifiIndicator wifiIndicatorState = WifiIndicator::AlwaysOn;
+  if (HttpMonitorConfig::autoDropWifi(config)) {
+    if (wifiHoldActive) {
+      wifiIndicatorState = WifiIndicator::Held;
+    } else if (WiFi.status() != WL_CONNECTED) {
+      wifiIndicatorState = WifiIndicator::Dropped;
     }
-    const int handIdx = spinnerFrame % 12;
-    renderer.drawLine(ccx, ccy, ccx + kHandSteps[handIdx].dx, ccy + kHandSteps[handIdx].dy, 2, true);
   }
+  const int iconY = headerY + (headerH - WIFI_ICON_SIZE) / 2;
+  drawWifiIndicator(headerLayout.iconX, iconY, wifiIndicatorState);
 
   // ---- Content band ----
   const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;

@@ -155,35 +155,15 @@ void test_unknown_keys_ignored() {
 
 // ---- numeric clamps ----
 
-void test_dial_tick_sec_defaults_to_5() {
+// The liveness dial (and its dial_tick_sec key) is gone -- an SD card left over
+// from before this change still has the key in monitor.conf, and it must parse
+// like any other unknown key: silently ignored, not a fatal error.
+void test_dial_tick_sec_key_still_parses_as_unknown() {
   Config cfg;
   std::string err;
-  HttpMonitorConfig::parse("url=http://g\n", cfg, err);
-  TEST_ASSERT_EQUAL(HttpMonitorConfig::DEFAULT_DIAL_TICK_SEC, cfg.dialTickSec);
-}
-
-void test_dial_tick_sec_zero_disables_the_dial() {
-  // 0 is a meaningful value, not a "missing" one: it switches the liveness dial
-  // off entirely, which is what lets a static dashboard leave the e-ink panel
-  // completely idle between polls. It must survive the clamp.
-  Config cfg;
-  std::string err;
-  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=0\n", cfg, err);
-  TEST_ASSERT_EQUAL(0, cfg.dialTickSec);
-}
-
-void test_dial_tick_sec_clamped_low() {
-  Config cfg;
-  std::string err;
-  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=-9\n", cfg, err);
-  TEST_ASSERT_EQUAL(0, cfg.dialTickSec);
-}
-
-void test_dial_tick_sec_clamped_high() {
-  Config cfg;
-  std::string err;
-  HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=99999\n", cfg, err);
-  TEST_ASSERT_EQUAL(60, cfg.dialTickSec);
+  const bool ok = HttpMonitorConfig::parse("url=http://g\ndial_tick_sec=5\n", cfg, err);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_STRING("http://g", cfg.url.c_str());
 }
 
 void test_interval_sec_clamped_low() {
@@ -382,6 +362,112 @@ void test_font_size_valid_value_parsed() {
   TEST_ASSERT_EQUAL(1, cfg.fontSize);
 }
 
+// ---- wifi_hold_sec ----
+
+void test_wifi_hold_sec_default_is_30() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://k\n", cfg, err));
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::DEFAULT_WIFI_HOLD_SEC, cfg.wifiHoldSec);
+  TEST_ASSERT_EQUAL(30, cfg.wifiHoldSec);
+}
+
+void test_wifi_hold_sec_parsed() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nwifi_hold_sec=90\n", cfg, err);
+  TEST_ASSERT_EQUAL(90, cfg.wifiHoldSec);
+}
+
+void test_wifi_hold_sec_clamped_low() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nwifi_hold_sec=0\n", cfg, err);
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::MIN_WIFI_HOLD_SEC, cfg.wifiHoldSec);
+}
+
+void test_wifi_hold_sec_clamped_high() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nwifi_hold_sec=999999\n", cfg, err);
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::MAX_WIFI_HOLD_SEC, cfg.wifiHoldSec);
+}
+
+// ---- autoDropWifi() -- the precise 300s boundary matters: this predicate is
+// what decides whether the device ever powers WiFi off between polls, so an
+// off-by-one here silently changes battery behavior for every interval near
+// the boundary. ----
+
+void test_auto_drop_wifi_false_at_300_boundary() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\ninterval_sec=300\n", cfg, err);
+  TEST_ASSERT_FALSE(HttpMonitorConfig::autoDropWifi(cfg));
+}
+
+void test_auto_drop_wifi_true_just_above_300_boundary() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\ninterval_sec=301\n", cfg, err);
+  TEST_ASSERT_TRUE(HttpMonitorConfig::autoDropWifi(cfg));
+}
+
+void test_auto_drop_wifi_false_for_default_interval() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\n", cfg, err);
+  TEST_ASSERT_FALSE(HttpMonitorConfig::autoDropWifi(cfg));
+}
+
+void test_auto_drop_wifi_true_for_large_interval() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\ninterval_sec=3600\n", cfg, err);
+  TEST_ASSERT_TRUE(HttpMonitorConfig::autoDropWifi(cfg));
+}
+
+// ---- battery_min_pct ----
+
+void test_battery_min_pct_default_is_5() {
+  Config cfg;
+  std::string err;
+  TEST_ASSERT_TRUE(HttpMonitorConfig::parse("url=http://k\n", cfg, err));
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::DEFAULT_BATTERY_MIN_PCT, cfg.batteryMinPct);
+  TEST_ASSERT_EQUAL(5, cfg.batteryMinPct);
+}
+
+void test_battery_min_pct_parsed() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nbattery_min_pct=10\n", cfg, err);
+  TEST_ASSERT_EQUAL(10, cfg.batteryMinPct);
+}
+
+// 0 is a meaningful value, not a "missing" one: it disables the battery-critical
+// guard entirely, the same way dial_tick_sec=0 used to disable the liveness
+// dial. It must survive the clamp intact.
+void test_battery_min_pct_zero_disables_and_survives_clamp() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nbattery_min_pct=0\n", cfg, err);
+  TEST_ASSERT_EQUAL(0, cfg.batteryMinPct);
+}
+
+void test_battery_min_pct_clamped_low() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nbattery_min_pct=-9\n", cfg, err);
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::MIN_BATTERY_MIN_PCT, cfg.batteryMinPct);
+}
+
+void test_battery_min_pct_clamped_high() {
+  Config cfg;
+  std::string err;
+  HttpMonitorConfig::parse("url=http://k\nbattery_min_pct=999\n", cfg, err);
+  TEST_ASSERT_EQUAL(HttpMonitorConfig::MAX_BATTERY_MIN_PCT, cfg.batteryMinPct);
+  TEST_ASSERT_EQUAL(50, cfg.batteryMinPct);
+}
+
 // ============================================================
 void setUp() {}
 void tearDown() {}
@@ -403,10 +489,7 @@ int main() {
   RUN_TEST(test_auth_header_length_is_bounded);
   RUN_TEST(test_blank_lines_ignored);
   RUN_TEST(test_unknown_keys_ignored);
-  RUN_TEST(test_dial_tick_sec_defaults_to_5);
-  RUN_TEST(test_dial_tick_sec_zero_disables_the_dial);
-  RUN_TEST(test_dial_tick_sec_clamped_low);
-  RUN_TEST(test_dial_tick_sec_clamped_high);
+  RUN_TEST(test_dial_tick_sec_key_still_parses_as_unknown);
   RUN_TEST(test_interval_sec_clamped_low);
   RUN_TEST(test_interval_sec_clamped_high);
   RUN_TEST(test_timeout_ms_clamped_low);
@@ -429,5 +512,18 @@ int main() {
   RUN_TEST(test_font_size_clamped_low);
   RUN_TEST(test_font_size_clamped_high);
   RUN_TEST(test_font_size_valid_value_parsed);
+  RUN_TEST(test_wifi_hold_sec_default_is_30);
+  RUN_TEST(test_wifi_hold_sec_parsed);
+  RUN_TEST(test_wifi_hold_sec_clamped_low);
+  RUN_TEST(test_wifi_hold_sec_clamped_high);
+  RUN_TEST(test_auto_drop_wifi_false_at_300_boundary);
+  RUN_TEST(test_auto_drop_wifi_true_just_above_300_boundary);
+  RUN_TEST(test_auto_drop_wifi_false_for_default_interval);
+  RUN_TEST(test_auto_drop_wifi_true_for_large_interval);
+  RUN_TEST(test_battery_min_pct_default_is_5);
+  RUN_TEST(test_battery_min_pct_parsed);
+  RUN_TEST(test_battery_min_pct_zero_disables_and_survives_clamp);
+  RUN_TEST(test_battery_min_pct_clamped_low);
+  RUN_TEST(test_battery_min_pct_clamped_high);
   return UNITY_END();
 }

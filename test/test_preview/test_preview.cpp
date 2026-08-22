@@ -18,6 +18,7 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -414,21 +415,25 @@ static void fillUpTriangle(GfxRenderer& r, int cx, int cy) {
 }
 
 // Circle outline via the midpoint algorithm — the mock has no drawArc, so the
-// liveness dial's ring is a plain pixel circle here (the real renderer draws it
-// with four drawArc quadrant calls).
-static void drawCircleOutline(GfxRenderer& r, int ccx, int ccy, int radius) {
+// wifi indicator's dot outline and signal arcs are approximated as plain pixel
+// circles here (the real renderer draws each with drawArc quadrant calls).
+// upperHalfOnly restricts the plot to the two upper quadrants (yDir=-1 in the
+// real renderer's terms), which is what the two signal arcs need.
+static void drawCircleOutline(GfxRenderer& r, int ccx, int ccy, int radius, bool upperHalfOnly = false) {
   int x = radius;
   int y = 0;
   int err = 1 - radius;
   while (x >= y) {
-    r.drawPixel(ccx + x, ccy + y, true);
-    r.drawPixel(ccx + y, ccy + x, true);
-    r.drawPixel(ccx - y, ccy + x, true);
-    r.drawPixel(ccx - x, ccy + y, true);
-    r.drawPixel(ccx - x, ccy - y, true);
-    r.drawPixel(ccx - y, ccy - x, true);
-    r.drawPixel(ccx + y, ccy - x, true);
     r.drawPixel(ccx + x, ccy - y, true);
+    r.drawPixel(ccx + y, ccy - x, true);
+    r.drawPixel(ccx - y, ccy - x, true);
+    r.drawPixel(ccx - x, ccy - y, true);
+    if (!upperHalfOnly) {
+      r.drawPixel(ccx - x, ccy + y, true);
+      r.drawPixel(ccx - y, ccy + x, true);
+      r.drawPixel(ccx + y, ccy + x, true);
+      r.drawPixel(ccx + x, ccy + y, true);
+    }
     ++y;
     if (err < 0) {
       err += 2 * y + 1;
@@ -439,16 +444,38 @@ static void drawCircleOutline(GfxRenderer& r, int ccx, int ccy, int radius) {
   }
 }
 
-// The header's far-right 24x24 liveness-dial corner. Ring radius 10, hand length
-// 8. The firmware animates the hand from loop() at 1Hz; the preview is a single
-// frame, so the hand sits at 12 o'clock (step 0 of the 12-step table).
-static void drawLivenessDial(GfxRenderer& r, int dialX, int dialY) {
-  constexpr int CX = 12, CY = 12;  // center of the 24x24 box
-  constexpr int RING_R = 10;
-  constexpr int HAND_LEN = 8;
-  const int ccx = dialX + CX, ccy = dialY + CY;
-  drawCircleOutline(r, ccx, ccy, RING_R);
-  r.drawLine(ccx, ccy, ccx, ccy - HAND_LEN);
+// Mirrors HttpMonitorActivity::WifiIndicator -- that enum is private to the
+// activity (which isn't natively includable: it pulls in Activity.h's Arduino
+// dependency), so the preview keeps its own copy of the three states, same as
+// it already does for the schema's row-type constants.
+enum class PreviewWifiState { AlwaysOn, Dropped, Held };
+
+// The header's far-right 24x24 wifi-indicator corner: dot (filled for
+// AlwaysOn/Held, outline for Dropped) + two signal arcs, plus a diagonal slash
+// (Dropped) or underscore bar (Held). Mirrors HttpMonitorActivity::
+// drawWifiIndicator()'s geometry; only the drawing primitives differ (the mock
+// lacks drawArc and drawLine's lineWidth overload).
+static void drawWifiIndicatorOn(GfxRenderer& r, int x, int y, PreviewWifiState state) {
+  constexpr int SIZE = 24;
+  constexpr int DOT_R = 2;
+  constexpr int ARC1_R = 7;
+  constexpr int ARC2_R = 11;
+  const int cx = x + SIZE / 2;
+  const int cy = y + SIZE - 6;
+
+  if (state == PreviewWifiState::Dropped) {
+    drawCircleOutline(r, cx, cy, DOT_R);
+  } else {
+    drawPipOn(r, cx, cy, DOT_R);
+  }
+  drawCircleOutline(r, cx, cy, ARC1_R, /*upperHalfOnly=*/true);
+  drawCircleOutline(r, cx, cy, ARC2_R, /*upperHalfOnly=*/true);
+
+  if (state == PreviewWifiState::Dropped) {
+    r.drawLine(x + 1, y + 1, x + SIZE - 2, y + SIZE - 2);
+  } else if (state == PreviewWifiState::Held) {
+    r.drawLine(cx - 6, y + SIZE - 1, cx + 6, y + SIZE - 1);
+  }
 }
 
 // ---- fixture-building helpers for the extended schema ----
@@ -519,7 +546,8 @@ static HttpMonitorPreviewRow glyphsRow(const char* glyphs, const char* label = n
 // NOT fit, so callers can assert on clipping (the dashboard does not scroll).
 static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<HttpMonitorPreviewSection>& sections,
                                              const char* title, const char* updated = nullptr,
-                                             const std::vector<const char*>& alerts = {}) {
+                                             const std::vector<const char*>& alerts = {}, int intervalSec = 30,
+                                             PreviewWifiState wifiState = PreviewWifiState::AlwaysOn) {
   const int pageWidth = r.getScreenWidth();
   const int pageHeight = r.getScreenHeight();
   const int headerY = 5;  // metrics.topPadding
@@ -536,22 +564,30 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
 
   r.clearScreen();
 
-  // ---- explicit header: title (left, BOLD) / updated (right) / liveness dial
-  // (far-right corner). NO rule line — the old drawHeader rule is gone.
+  // ---- explicit header: title (left, BOLD) / interval / updated (both SMALL) /
+  // wifi indicator (far-right 24x24 corner). NO rule line — the old drawHeader
+  // rule is gone. Positioning comes from HttpMonitorLayout::computeHeaderLayout()
+  // — the SAME function HttpMonitorActivity::renderDashboard() calls — so this
+  // can't silently drift from the shipping header; only the wifi glyph's actual
+  // drawing primitives differ (mock vs real renderer).
   const char* displayTitle = (title && title[0] != '\0') ? title : "Http Monitor";
   const std::string updatedStr = updated ? updated : "";
   const int updatedW = !updatedStr.empty() ? r.getTextWidth(SMALL_FONT_ID, updatedStr.c_str()) : 0;
-  constexpr int DIAL_SIZE = 24;
-  const int dialX = pageWidth - sidePadding - DIAL_SIZE;
-  const int updatedX = dialX - 8 - updatedW;
-  const int titleZone = pageWidth - 2 * sidePadding - updatedW - DIAL_SIZE - 2 * 8;
+  char intervalBuf[16];
+  snprintf(intervalBuf, sizeof(intervalBuf), "%ds", intervalSec);
+  const int intervalW = r.getTextWidth(SMALL_FONT_ID, intervalBuf);
+  constexpr int WIFI_ICON_SIZE = 24;
+  constexpr int HEADER_GAP = 8;
+  const auto headerLayout =
+      HttpMonitorLayout::computeHeaderLayout(pageWidth, sidePadding, intervalW, updatedW, WIFI_ICON_SIZE, HEADER_GAP);
   const int titleY = headerY + (headerH - r.getLineHeight(UI_12_FONT_ID)) / 2;
-  const std::string titleStr = r.truncatedText(UI_12_FONT_ID, displayTitle, titleZone, 1 /* BOLD */);
+  const std::string titleStr = r.truncatedText(UI_12_FONT_ID, displayTitle, headerLayout.titleZone, 1 /* BOLD */);
   r.drawText(UI_12_FONT_ID, sidePadding, titleY, titleStr.c_str(), true, 1);
-  const int updatedY = headerY + (headerH - r.getLineHeight(SMALL_FONT_ID)) / 2;
-  if (!updatedStr.empty()) r.drawText(SMALL_FONT_ID, updatedX, updatedY, updatedStr.c_str());
-  const int dialY = headerY + (headerH - DIAL_SIZE) / 2;
-  drawLivenessDial(r, dialX, dialY);
+  const int smallY = headerY + (headerH - r.getLineHeight(SMALL_FONT_ID)) / 2;
+  r.drawText(SMALL_FONT_ID, headerLayout.intervalX, smallY, intervalBuf);
+  if (!updatedStr.empty()) r.drawText(SMALL_FONT_ID, headerLayout.updatedX, smallY, updatedStr.c_str());
+  const int iconY = headerY + (headerH - WIFI_ICON_SIZE) / 2;
+  drawWifiIndicatorOn(r, headerLayout.iconX, iconY, wifiState);
 
   // ---- per-entry heights + parallel entry list (headings, typed rows, alerts).
   enum class EntryKind { HEADING, ROW, ALERT };
@@ -865,12 +901,12 @@ static int renderHttpMonitorDashboardGeneric(GfxRenderer& r, const std::vector<H
   return entryCount - visibleEntries;
 }
 
-static void renderHttpMonitorDashboard(GfxRenderer& r) {
+static void renderHttpMonitorDashboard(GfxRenderer& r, PreviewWifiState wifiState = PreviewWifiState::AlwaysOn) {
   const std::vector<HttpMonitorPreviewSection> sections = {
       {"System", {{"CPU", "23%", 23, false}, {"Memory", "6.0/16 GB", 37, false}}},
       {"Disks", {{"/data", "88%", 88, true}, {"/", "41%", 41, false}}},
   };
-  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", "12:01:02");
+  renderHttpMonitorDashboardGeneric(r, sections, "prod-1", "12:01:02", {}, /*intervalSec=*/30, wifiState);
 }
 
 static void renderHttpMonitorError(GfxRenderer& r) {
@@ -941,6 +977,20 @@ void render_httpmonitor_dashboard_x3() {
   GfxRenderer r(528, 792);
   renderHttpMonitorDashboard(r);
   TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_x3.bmp"));
+}
+
+// The other two WifiIndicator states — render_httpmonitor_dashboard_x4/_x3
+// above already cover AlwaysOn (the default).
+void render_httpmonitor_wifi_dropped_x4() {
+  GfxRenderer r(480, 800);
+  renderHttpMonitorDashboard(r, PreviewWifiState::Dropped);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_wifi_dropped_x4.bmp"));
+}
+
+void render_httpmonitor_wifi_held_x4() {
+  GfxRenderer r(480, 800);
+  renderHttpMonitorDashboard(r, PreviewWifiState::Held);
+  TEST_ASSERT_TRUE(r.saveBMP("test/preview_httpmonitor_wifi_held_x4.bmp"));
 }
 
 // Server-driven rotation (rotation: "reverse"): sets the renderer to
@@ -1202,6 +1252,8 @@ int main() {
   RUN_TEST(render_diceroller);
   RUN_TEST(render_httpmonitor_dashboard_x4);
   RUN_TEST(render_httpmonitor_dashboard_x3);
+  RUN_TEST(render_httpmonitor_wifi_dropped_x4);
+  RUN_TEST(render_httpmonitor_wifi_held_x4);
   RUN_TEST(render_httpmonitor_rotated_x4);
   RUN_TEST(render_httpmonitor_dense_x3_top);
   RUN_TEST(render_httpmonitor_overflow_x3_top);

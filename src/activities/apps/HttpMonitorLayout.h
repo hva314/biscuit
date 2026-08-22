@@ -136,4 +136,34 @@ inline int entryY(const int* entryHeights, int i, int contentTop) {
   return y;
 }
 
+// ---- header layout ----
+// The dashboard header renders one line, left to right: title (truncated to
+// titleZone) ... interval ... updated timestamp ... the far-right 24x24 wifi
+// indicator. This is the anti-drift mechanism for that line: both
+// HttpMonitorActivity::renderDashboard() (shipping) and test_preview.cpp (the
+// preview harness) call this single function so the positioning math cannot
+// silently diverge between them -- only the actual drawing primitives differ.
+struct HeaderLayout {
+  int titleZone;  // max width available for the (possibly truncated) title
+  int intervalX;  // left edge of the interval text ("600s")
+  int updatedX;   // left edge of the `updated` timestamp text
+  int iconX;      // left edge of the iconSize x iconSize wifi indicator
+};
+
+// Widths (intervalW, updatedW) are measured text widths in pixels; updatedW is
+// 0 when there is no timestamp to show (e.g. before the first successful
+// poll), which collapses its reserved gap to a single `gap` rather than two.
+// titleZone is clamped to 0 rather than allowed to go negative -- a caller
+// handing it straight to a truncate/measure call must never see a negative
+// width, regardless of how narrow pageWidth is or how wide the other fields are.
+inline HeaderLayout computeHeaderLayout(int pageWidth, int sidePadding, int intervalW, int updatedW, int iconSize,
+                                        int gap) {
+  const int iconX = pageWidth - sidePadding - iconSize;
+  const int updatedX = iconX - gap - updatedW;
+  const int intervalX = updatedX - gap - intervalW;
+  int titleZone = intervalX - sidePadding - gap;
+  if (titleZone < 0) titleZone = 0;
+  return HeaderLayout{titleZone, intervalX, updatedX, iconX};
+}
+
 }  // namespace HttpMonitorLayout

@@ -104,10 +104,12 @@ bool parse(const char* text, Config& out, std::string& errorOut) {
       int v = atoi(value.c_str());
       if (v < 0) v = 0;
       out.fullRefreshEvery = v;
-    } else if (key == "dial_tick_sec") {
-      out.dialTickSec = clampInt(atoi(value.c_str()), MIN_DIAL_TICK_SEC, MAX_DIAL_TICK_SEC);
     } else if (key == "font_size") {
       out.fontSize = clampInt(atoi(value.c_str()), MIN_FONT_SIZE, MAX_FONT_SIZE);
+    } else if (key == "wifi_hold_sec") {
+      out.wifiHoldSec = clampInt(atoi(value.c_str()), MIN_WIFI_HOLD_SEC, MAX_WIFI_HOLD_SEC);
+    } else if (key == "battery_min_pct") {
+      out.batteryMinPct = clampInt(atoi(value.c_str()), MIN_BATTERY_MIN_PCT, MAX_BATTERY_MIN_PCT);
     } else if (key == "auth_header") {
       // Same hasCrOrLf() guard as url/action_url above -- this value goes
       // straight into http.addHeader().

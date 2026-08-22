@@ -42,6 +42,13 @@ class Activity {
 
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
+  // Opt-in: a resident activity (preventAutoSleep() == true) that also returns
+  // true here tells main.cpp it does NOT need continuous full-clock treatment --
+  // it can stay on screen indefinitely without resetting the inactivity timer or
+  // forcing setPowerSaving(false) every loop. Every existing activity keeps
+  // today's exact behaviour (default false); only an activity that explicitly
+  // opts in changes anything.
+  virtual bool allowPowerSaving() { return false; }
   virtual bool isReaderActivity() const { return false; }
 
   // Start a new activity without destroying the current one

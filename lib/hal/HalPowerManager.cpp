@@ -61,6 +61,16 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+  // Defensive: esp_sleep_enable_timer_wakeup() (used by HttpMonitorActivity's
+  // sliced light sleep) arms a persistent wakeup source that survives until
+  // explicitly disabled -- it is not scoped to the light-sleep call that
+  // enabled it. If some future caller armed a timer wakeup and forgot to
+  // disarm it (HttpMonitorActivity does, but nothing enforces that everywhere
+  // else won't), deep sleep would inherit it and wake/reboot on that timer --
+  // harmless on battery (the latch MOSFET below cuts power outright) but a
+  // reboot loop on USB, where the MCU stays powered through deep sleep.
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+
   // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);

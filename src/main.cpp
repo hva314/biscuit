@@ -398,12 +398,38 @@ void loop() {
     }
   }
 
-  // Check for any user activity (button press or release) or active background work
+  // Check for any user activity (button press or release), or a resident
+  // activity that hasn't opted into power saving. `resident` alone used to be
+  // enough to both reset the inactivity timer AND force full clock every single
+  // loop -- which meant a resident activity could never downclock or auto-sleep,
+  // even while genuinely idle. allowPowerSaving() lets a resident activity (e.g.
+  // HttpMonitorActivity) opt out of that: it stays on screen (auto-sleep is
+  // still inhibited below via `resident`), but stops forcing full clock, which
+  // is what lets setPowerSaving(true) and the WIFI_MODE_NULL downclock gate in
+  // HalPowerManager actually take effect for it.
+  //
+  // Bug fixed here: for a power-saving-opted-in resident activity,
+  // lastActivityTime is deliberately NOT refreshed every loop while resident --
+  // it can go hours-stale while the dashboard just sits there idle. The moment
+  // `resident` flips to false (e.g. a failed poll: SHOWING -> ERROR, or ->
+  // BATTERY_CRITICAL), the auto-sleep check below would see that hours-stale
+  // timestamp and fire enterDeepSleep() on the very next iteration (~50ms) --
+  // no grace period at all, replacing an error screen with a power-off before
+  // it can be read. `wasResident` tracks the previous iteration's value so a
+  // resident -> non-resident EDGE gets exactly one lastActivityTime refresh,
+  // restoring the same sleepTimeoutMs grace period every other state
+  // transition already gets (and that this activity itself got before R3,
+  // when `resident` alone drove a refresh on every loop while showing).
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || activityManager.preventAutoSleep()) {
+  static bool wasResident = false;
+  const bool resident = activityManager.preventAutoSleep();
+  const bool residentFallingEdge = wasResident && !resident;
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || (resident && !activityManager.allowPowerSaving()) ||
+      residentFallingEdge) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
+  wasResident = resident;
 
   static bool screenshotButtonsReleased = true;
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
@@ -419,8 +445,12 @@ void loop() {
     screenshotButtonsReleased = true;
   }
 
+  // Auto-sleep inhibit is now explicit (`resident`), not implicit via a
+  // continuously-reset lastActivityTime -- a power-saving-opted-in resident
+  // activity can go idle (lastActivityTime stops advancing) without ever
+  // reaching this branch, because `resident` short-circuits it regardless.
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
-  if (millis() - lastActivityTime >= sleepTimeoutMs) {
+  if (!resident && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
     enterDeepSleep();
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
